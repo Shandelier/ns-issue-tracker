@@ -322,7 +322,7 @@ async function fetchFileContext(
     return null;
   }
 
-  const buffer = Buffer.from(response.content, response.encoding ?? "base64");
+  const buffer = Buffer.from(response.content, "base64");
   const fullContent = buffer.toString("utf8");
   if (isProbablyBinary(fullContent)) {
     return null;
@@ -357,6 +357,131 @@ ${footer}`;
 }
 
 const MAX_SELECTED_FILES = 25;
+
+type SuggestedPathCandidate = {
+  path: string;
+  score: number;
+  depth: number;
+};
+
+function suggestDefaultPaths(tree: RepoTreeNode[], limit = 12) {
+  const candidates: SuggestedPathCandidate[] = [];
+  const fallback: SuggestedPathCandidate[] = [];
+
+  const exactScores = new Map<string, number>([
+    ["readme.md", 120],
+    ["readme", 115],
+    ["readme.txt", 110],
+    ["contributing.md", 90],
+    ["package.json", 95],
+    ["requirements.txt", 95],
+    ["pyproject.toml", 90],
+    ["setup.py", 80],
+    ["composer.json", 85],
+    ["gemfile", 80],
+    ["cargo.toml", 90],
+    ["go.mod", 90],
+    ["go.sum", 60],
+    ["build.gradle", 85],
+    ["build.gradle.kts", 85],
+    ["pom.xml", 85],
+    ["docker-compose.yml", 70],
+    ["docker-compose.yaml", 70],
+    ["dockerfile", 65],
+    ["makefile", 60],
+    ["tsconfig.json", 55],
+    ["next.config.mjs", 55],
+    ["eslint.config.mjs", 50],
+  ]);
+
+  const pathMatchers: Array<{ score: number; test: (path: string) => boolean }> = [
+    { score: 80, test: (path) => /(^|\/)docs?\/readme/i.test(path) },
+    { score: 75, test: (path) => /(^|\/)src\/index\.(ts|tsx|js|jsx|py|rb|php|go)$/.test(path) },
+    { score: 72, test: (path) => /(^|\/)src\/main\.(ts|tsx|js|jsx|py|rb|java|go)$/.test(path) },
+    { score: 70, test: (path) => /(^|\/)src\/app\.(ts|tsx|js|jsx)$/.test(path) },
+    { score: 68, test: (path) => /(^|\/)src\/server\.(ts|tsx|js|jsx)$/.test(path) },
+    { score: 65, test: (path) => /(^|\/)src\/app\/page\.(ts|tsx|js|jsx)$/.test(path) },
+    { score: 62, test: (path) => /(^|\/)src\/main\.(rs|rb|cs)$/.test(path) },
+  ];
+
+  function traverse(nodes: RepoTreeNode[], depth: number) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.type === "file") {
+        const lowerName = node.name.toLowerCase();
+        const lowerPath = node.path.toLowerCase();
+        let score = 0;
+
+        if (exactScores.has(lowerName)) {
+          score = Math.max(score, exactScores.get(lowerName) ?? 0);
+        }
+        if (lowerName.startsWith("readme")) {
+          score = Math.max(score, 105);
+        }
+        for (const matcher of pathMatchers) {
+          if (matcher.test(lowerPath)) {
+            score = Math.max(score, matcher.score);
+          }
+        }
+        if (lowerPath.endsWith(".md") && score === 0) {
+          score = 40;
+        }
+
+        if (score > 0) {
+          candidates.push({ path: node.path, score, depth });
+        } else if (depth <= 2) {
+          fallback.push({ path: node.path, score: 10 - depth, depth });
+        }
+      }
+
+      if (node.type === "dir" && node.children?.length) {
+        traverse(node.children, depth + 1);
+      }
+    }
+  }
+
+  traverse(tree, 0);
+
+  const ranked = candidates
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.path.localeCompare(b.path);
+    })
+    .map((candidate) => candidate.path);
+
+  const unique = new Set<string>();
+  const suggestions: string[] = [];
+  for (const path of ranked) {
+    if (!unique.has(path)) {
+      unique.add(path);
+      suggestions.push(path);
+      if (suggestions.length >= limit) {
+        return suggestions;
+      }
+    }
+  }
+
+  const fallbackSorted = fallback
+    .sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+      return a.path.localeCompare(b.path);
+    })
+    .map((candidate) => candidate.path);
+
+  for (const path of fallbackSorted) {
+    if (!unique.has(path)) {
+      unique.add(path);
+      suggestions.push(path);
+      if (suggestions.length >= limit) {
+        break;
+      }
+    }
+  }
+
+  return suggestions;
+}
 
 async function buildFileContexts(
   owner: string,
@@ -516,6 +641,7 @@ export async function POST(request: Request) {
         ? Math.max(1, Math.min(100, Math.floor(rawIssueLimit)))
         : undefined;
     const listRepoFiles = Boolean(body?.includeRepoTree);
+    const onlyRepoTree = Boolean(body?.onlyRepoTree);
     const rawTreeDepth = body?.treeDepth;
     const treeDepth =
       typeof rawTreeDepth === "number" && Number.isFinite(rawTreeDepth)
@@ -530,7 +656,7 @@ export async function POST(request: Request) {
       typeof body?.branch === "string" && body.branch.trim().length > 0
         ? body.branch.trim()
         : undefined;
-    const needBranchInfo = listRepoFiles || selectedPaths.length > 0;
+    const needBranchInfo = listRepoFiles || selectedPaths.length > 0 || onlyRepoTree;
 
     if (!repoUrl) {
       return NextResponse.json({ error: "Repository URL is required" }, { status: 400 });
@@ -541,40 +667,54 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid GitHub repository URL" }, { status: 400 });
     }
 
+    let branchRef = preferredBranch as string | undefined;
+    let repoInfo: GitHubRepo | undefined;
+    if (!branchRef && needBranchInfo) {
+      repoInfo = await fetchRepoInfo(parsed.owner, parsed.repo, githubToken);
+      branchRef = repoInfo.default_branch ?? "main";
+    }
+    const resolvedBranch = branchRef ?? "main";
+
+    if (onlyRepoTree) {
+      const repoTree = await fetchRepoTree(
+        parsed.owner,
+        parsed.repo,
+        githubToken,
+        treeDepth,
+        resolvedBranch
+      );
+      const suggestedPaths = repoTree.length ? suggestDefaultPaths(repoTree) : [];
+      return NextResponse.json({
+        repoTree,
+        branch: resolvedBranch,
+        suggestedPaths,
+      });
+    }
+
     const issues = await fetchAllIssues(parsed.owner, parsed.repo, githubToken, issueLimit);
     if (issues.length === 0) {
       const emptyResponse: Record<string, unknown> = { estimates: [] };
       if (listRepoFiles) {
-        let branchRef = preferredBranch;
-        if (!branchRef) {
-          const repoInfo = await fetchRepoInfo(parsed.owner, parsed.repo, githubToken);
-          branchRef = repoInfo.default_branch ?? "main";
-        }
         const repoTree = await fetchRepoTree(
           parsed.owner,
           parsed.repo,
           githubToken,
           treeDepth,
-          branchRef
+          resolvedBranch
         );
         emptyResponse.repoTree = repoTree;
-        emptyResponse.branch = branchRef;
+        emptyResponse.branch = resolvedBranch;
+        emptyResponse.suggestedPaths = repoTree.length ? suggestDefaultPaths(repoTree) : [];
       }
       return NextResponse.json(emptyResponse);
     }
 
-    let branchRef = preferredBranch;
-    if (!branchRef && needBranchInfo) {
-      const repoInfo = await fetchRepoInfo(parsed.owner, parsed.repo, githubToken);
-      branchRef = repoInfo.default_branch ?? "main";
-    }
-
     const repoTreePromise = listRepoFiles
-      ? fetchRepoTree(parsed.owner, parsed.repo, githubToken, treeDepth, branchRef)
+      ? fetchRepoTree(parsed.owner, parsed.repo, githubToken, treeDepth, resolvedBranch)
       : Promise.resolve<RepoTreeNode[] | undefined>(undefined);
 
     const fileContextsPromise = selectedPaths.length
-      ? buildFileContexts(parsed.owner, parsed.repo, selectedPaths, githubToken, branchRef)
+      ? buildFileContexts(parsed.owner, parsed.repo, selectedPaths, githubToken, resolvedBranch)
       : Promise.resolve({ contexts: [] as string[], files: [] as FileContext[] });
 
     const summaries = await buildIssuesPayload(issues, githubToken);
@@ -597,10 +737,13 @@ export async function POST(request: Request) {
       };
     });
 
+    const branchField = needBranchInfo || preferredBranch ? resolvedBranch : undefined;
+
     return NextResponse.json({
       estimates: enriched,
       repoTree,
-      branch: branchRef,
+      branch: branchField,
+      suggestedPaths: repoTree ? suggestDefaultPaths(repoTree) : undefined,
       selectedFiles: files.map((file) => ({
         path: file.path,
         language: file.language,
