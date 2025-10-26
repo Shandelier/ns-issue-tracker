@@ -38,6 +38,7 @@ type CachedEstimate = {
   selectedPaths: string[];
   branch?: string;
   selectedFiles?: SelectedFileMeta[];
+  model?: string;
 };
 
 type EstimateResponse = {
@@ -190,6 +191,7 @@ export default function HomePage() {
   const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(false);
   const [debugCapturePath, setDebugCapturePath] = useState<string | null>(null);
   const [debugCopyState, setDebugCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [openRouterModel, setOpenRouterModel] = useState<string | null>(null);
   const debugCopyTimeoutRef = useRef<number | null>(null);
 
   const trimmedRepo = repoUrl.trim();
@@ -215,7 +217,10 @@ export default function HomePage() {
 
   const branchKey = branch && branch.length ? branch : "default";
   const limitKey = normalizedLimit ?? "all";
-  const cacheKey = trimmedRepo ? `${trimmedRepo}::${branchKey}::${selectionKey}::${limitKey}` : "";
+  const modelKey = openRouterModel ?? "env";
+  const cacheKey = trimmedRepo
+    ? `${trimmedRepo}::${branchKey}::${selectionKey}::${limitKey}::${modelKey}`
+    : "";
   const cachedResult = cacheKey ? cache[cacheKey] : undefined;
 
   const hasData = estimates.length > 0;
@@ -271,8 +276,14 @@ export default function HomePage() {
 
   useEffect(() => {
     const stored = loadSettingsFromStorage();
-    if (stored?.githubToken) {
+    if (!stored) {
+      return;
+    }
+    if (stored.githubToken) {
       setGithubToken(stored.githubToken);
+    }
+    if (stored.model) {
+      setOpenRouterModel(stored.model);
     }
   }, []);
 
@@ -305,6 +316,8 @@ export default function HomePage() {
               value.selectedPaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
             )
           : [];
+        const storedModel =
+          typeof value.model === "string" && value.model.length > 0 ? value.model : undefined;
         sanitized[key] = {
           estimates: value.estimates,
           savedAt: typeof value.savedAt === "number" ? value.savedAt : Date.now(),
@@ -312,6 +325,7 @@ export default function HomePage() {
           selectedPaths: cleanedSelectedPaths,
           branch: typeof value.branch === "string" ? value.branch : undefined,
           selectedFiles: Array.isArray(value.selectedFiles) ? value.selectedFiles : undefined,
+          ...(storedModel ? { model: storedModel } : {}),
         };
       }
 
@@ -551,20 +565,25 @@ export default function HomePage() {
       setDebugCapturePath(null);
 
       try {
+        const requestBody: Record<string, unknown> = {
+          repoUrl: trimmedRepo,
+          githubToken,
+          issueLimit: normalizedLimit,
+          selectedPaths: effectiveSelection,
+          branch,
+          debugCapture: debugCaptureEnabled,
+        };
+        if (openRouterModel) {
+          requestBody.model = openRouterModel;
+        }
+
         const response = await fetch("/api/estimate", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           credentials: "include",
-          body: JSON.stringify({
-            repoUrl: trimmedRepo,
-            githubToken,
-            issueLimit: normalizedLimit,
-            selectedPaths: effectiveSelection,
-            branch,
-            debugCapture: debugCaptureEnabled,
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
@@ -598,6 +617,7 @@ export default function HomePage() {
               selectedPaths: effectiveSelection,
               branch: payload.branch ?? branch,
               selectedFiles: payload.selectedFiles,
+              ...(openRouterModel ? { model: openRouterModel } : {}),
             },
           }));
         }
@@ -619,6 +639,7 @@ export default function HomePage() {
       githubToken,
       isRepoLoaded,
       normalizedLimit,
+      openRouterModel,
       selectionTrimmed,
       trimmedRepo,
       debugCaptureEnabled,

@@ -640,7 +640,7 @@ async function captureDebugPayload(
 async function requestEstimates(
   issueSummaries: IssueSummary[],
   fileContexts: string[],
-  options?: { debugCapture?: boolean }
+  options?: { debugCapture?: boolean; model?: string }
 ) {
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
@@ -660,7 +660,13 @@ ${JSON.stringify(issueSummaries)}`;
     enabledOverride: options?.debugCapture,
   });
 
-  const model = process.env.OPENROUTER_MODEL || "x-ai/grok-code-fast-1";
+  const requestedModel = options?.model?.trim();
+  const envDefault = process.env.OPENROUTER_MODEL?.trim();
+  const model = requestedModel && requestedModel.length > 0
+    ? requestedModel
+    : envDefault && envDefault.length > 0
+      ? envDefault
+      : "x-ai/grok-code-fast-1";
 
   const { content } = await openRouterChat({
     model,
@@ -722,6 +728,8 @@ export async function POST(request: Request) {
           .map((entry: unknown) => (typeof entry === "string" ? entry.trim() : ""))
           .filter(Boolean)
       : [];
+    const rawModel = typeof body?.model === "string" ? body.model.trim() : "";
+    const requestedModel = rawModel.length > 0 ? rawModel : undefined;
     const preferredBranch =
       typeof body?.branch === "string" && body.branch.trim().length > 0
         ? body.branch.trim()
@@ -794,6 +802,7 @@ export async function POST(request: Request) {
     const [{ contexts, files }, repoTree] = await Promise.all([fileContextsPromise, repoTreePromise]);
     const { estimates, debugPath } = await requestEstimates(summaries, contexts, {
       debugCapture: debugCaptureOverride,
+      model: requestedModel,
     });
 
     const enriched = summaries.map((issue) => {
