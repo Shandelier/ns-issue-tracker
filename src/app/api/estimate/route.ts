@@ -134,13 +134,26 @@ async function buildIssuesPayload(
   return payload;
 }
 
-async function requestEstimates(issueSummaries: IssueSummary[]) {
-  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
+function coerceJsonPayload(rawText: string) {
+  const trimmed = rawText.trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fencedMatch ? fencedMatch[1] : trimmed;
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+  const jsonText =
+    firstBrace !== -1 && lastBrace !== -1 ? candidate.slice(firstBrace, lastBrace + 1) : candidate;
+  return JSON.parse(jsonText);
+}
 
-  const client = new OpenAI({ apiKey });
+async function requestEstimates(issueSummaries: IssueSummary[]) {
+  const apiKey =
+    process.env.OPENROUTER_API_KEY ||
+    process.env.OPENROUTER_KEY ||
+    process.env.OPENAI_API_KEY ||
+    process.env.OPENAI_KEY;
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not configured");
+  }
 
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
@@ -150,34 +163,42 @@ and estimated_cost (a string like "$250"). Use the provided context and keep exp
 ${JSON.stringify(issueSummaries)}
 `;
 
-  const response = await client.responses.create({
-    model: "gpt-5.0-mini",
-    input: [
+  const referer = process.env.OPENROUTER_SITE_URL;
+  const title = process.env.OPENROUTER_APP_TITLE || process.env.OPENROUTER_APP_NAME;
+
+  const defaultHeaders: Record<string, string> = {};
+  if (referer) {
+    defaultHeaders["HTTP-Referer"] = referer;
+  }
+  if (title) {
+    defaultHeaders["X-Title"] = title;
+  }
+
+  const model = process.env.OPENROUTER_MODEL || "x-ai/grok-code-fast-1";
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultHeaders: Object.keys(defaultHeaders).length ? defaultHeaders : undefined,
+  });
+
+  const response = await client.chat.completions.create({
+    model,
+    temperature: 0.2,
+    messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    reasoning: {
-      effort: "minimal"
-    }
   });
 
-  const text =
-    response.output_text ??
-    response.output
-      ?.map((item) =>
-        item.content
-          ?.map((piece) => (piece.type === "output_text" ? piece.text : ""))
-          .join("") ?? ""
-      )
-      .join("") ??
-    "";
-  if (!text) {
-    throw new Error("OpenAI response was empty");
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error("OpenRouter response was empty");
   }
 
   try {
-    const parsed = JSON.parse(text) as {
-      estimates: Array<{
+    const parsed = coerceJsonPayload(content) as {
+      estimates?: Array<{
         issue_number: number;
         complexity: string;
         estimated_cost: string;
@@ -185,7 +206,7 @@ ${JSON.stringify(issueSummaries)}
     };
     return parsed.estimates ?? [];
   } catch (error) {
-    throw new Error("Unable to parse OpenAI response");
+    throw new Error("Unable to parse OpenRouter response");
   }
 }
 
