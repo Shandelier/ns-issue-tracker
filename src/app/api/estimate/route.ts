@@ -1,16 +1,10 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import OpenAI from "openai";
-import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { createHash } from "crypto";
 import { extname, join } from "path";
 import { mkdir, writeFile } from "fs/promises";
 import { AUTH_COOKIE_NAME, isAuthorizedCookie, readConfiguredPasswordHash } from "@/lib/auth";
-
-const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-if (proxyUrl) {
-  setGlobalDispatcher(new ProxyAgent(proxyUrl));
-}
+import { githubRequestJson, openRouterChat } from "@/lib/server/external-apis";
 
 export const runtime = "nodejs";
 
@@ -63,23 +57,6 @@ function parseGitHubUrl(repoUrl: string) {
   }
 }
 
-async function fetchJson<T>(url: string, githubToken?: string) {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "issue-estimator",
-  };
-  const token = githubToken || process.env.GITHUB_TOKEN;
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`GitHub request failed: ${response.status} ${message}`);
-  }
-  return (await response.json()) as T;
-}
-
 async function fetchAllIssues(
   owner: string,
   repo: string,
@@ -91,9 +68,9 @@ async function fetchAllIssues(
   const cappedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
 
   while (true) {
-    const batch = await fetchJson<GitHubIssue[]>(
+    const { data: batch } = await githubRequestJson<GitHubIssue[]>(
       `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100&page=${page}`,
-      githubToken
+      { token: githubToken }
     );
 
     if (batch.length === 0) break;
@@ -118,9 +95,9 @@ async function fetchIssueComments(
     return [];
   }
 
-  const comments = await fetchJson<GitHubComment[]>(
+  const { data: comments } = await githubRequestJson<GitHubComment[]>(
     `${issue.comments_url}?per_page=20`,
-    githubToken
+    { token: githubToken }
   );
 
   return comments
@@ -130,7 +107,11 @@ async function fetchIssueComments(
 }
 
 async function fetchRepoInfo(owner: string, repo: string, githubToken?: string) {
-  return await fetchJson<GitHubRepo>(`https://api.github.com/repos/${owner}/${repo}`, githubToken);
+  const { data } = await githubRequestJson<GitHubRepo>(
+    `https://api.github.com/repos/${owner}/${repo}`,
+    { token: githubToken }
+  );
+  return data;
 }
 
 async function fetchDirectoryEntries(
@@ -147,10 +128,11 @@ async function fetchDirectoryEntries(
     .join("/");
   const suffix = encodedPath ? `/${encodedPath}` : "";
   const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : "";
-  return await fetchJson<GitHubContentFile[] | GitHubContentFile>(
+  const { data } = await githubRequestJson<GitHubContentFile[] | GitHubContentFile>(
     `https://api.github.com/repos/${owner}/${repo}/contents${suffix}${refParam}`,
-    githubToken
+    { token: githubToken }
   );
+  return data;
 }
 
 async function fetchRepoTree(
@@ -316,9 +298,9 @@ async function fetchFileContext(
     .map(encodeURIComponent)
     .join("/");
   const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : "";
-  const response = await fetchJson<GitHubContentFile>(
+  const { data: response } = await githubRequestJson<GitHubContentFile>(
     `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}${refParam}`,
-    githubToken
+    { token: githubToken }
   );
 
   if (response.type !== "file" || !response.content) {
@@ -660,15 +642,6 @@ async function requestEstimates(
   fileContexts: string[],
   options?: { debugCapture?: boolean }
 ) {
-  const apiKey =
-    process.env.OPENROUTER_API_KEY ||
-    process.env.OPENROUTER_KEY ||
-    process.env.OPENAI_API_KEY ||
-    process.env.OPENAI_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not configured");
-  }
-
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
 and estimated_cost (a string like "$250"). Use the provided context and keep explanations brief.`;
@@ -687,26 +660,9 @@ ${JSON.stringify(issueSummaries)}`;
     enabledOverride: options?.debugCapture,
   });
 
-  const referer = process.env.OPENROUTER_SITE_URL;
-  const title = process.env.OPENROUTER_APP_TITLE || process.env.OPENROUTER_APP_NAME;
-
-  const defaultHeaders: Record<string, string> = {};
-  if (referer) {
-    defaultHeaders["HTTP-Referer"] = referer;
-  }
-  if (title) {
-    defaultHeaders["X-Title"] = title;
-  }
-
   const model = process.env.OPENROUTER_MODEL || "x-ai/grok-code-fast-1";
 
-  const client = new OpenAI({
-    apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
-    defaultHeaders: Object.keys(defaultHeaders).length ? defaultHeaders : undefined,
-  });
-
-  const response = await client.chat.completions.create({
+  const { content } = await openRouterChat({
     model,
     temperature: 0.2,
     messages: [
@@ -714,11 +670,6 @@ ${JSON.stringify(issueSummaries)}`;
       { role: "user", content: userPrompt },
     ],
   });
-
-  const content = response.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    throw new Error("OpenRouter response was empty");
-  }
 
   try {
     const parsed = coerceJsonPayload(content) as {
