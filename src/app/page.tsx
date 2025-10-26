@@ -637,9 +637,12 @@ export default function HomePage() {
     await runEstimation({ bypassCache: true });
   }, [runEstimation]);
 
-  const handleToggleDebugCapture = useCallback(() => {
-    setDebugCaptureEnabled((prev) => !prev);
-  }, []);
+  const handleDebugCaptureChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setDebugCaptureEnabled(event.target.checked);
+    },
+    []
+  );
 
   const handleCopyDebugPath = useCallback(async () => {
     const scheduleReset = () => {
@@ -874,16 +877,19 @@ export default function HomePage() {
                   </>
                 ) : null}
               </div>
-              <button
-                type="button"
-                onClick={handleToggleDebugCapture}
-                aria-pressed={debugCaptureEnabled}
-                className={`text-sm font-medium underline-offset-4 hover:underline ${
-                  debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"
-                }`}
-              >
-                Debug capture: {debugCaptureEnabled ? "On" : "Off"}
-              </button>
+              <label className="flex items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={debugCaptureEnabled}
+                  disabled={isEstimating}
+                  onChange={handleDebugCaptureChange}
+                />
+                <span className="font-medium text-slate-700">Debug capture</span>
+                <span className={debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"}>
+                  {debugCaptureEnabled ? "On" : "Off"}
+                </span>
+              </label>
             </div>
           </form>
         </section>
@@ -911,13 +917,6 @@ export default function HomePage() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <span
-                className={`text-sm font-medium ${
-                  debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"
-                }`}
-              >
-                Debug capture: {debugCaptureEnabled ? "On" : "Off"}
-              </span>
               <a
                 href={csvHref}
                 download="issue-estimates.csv"
