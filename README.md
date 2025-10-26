@@ -20,7 +20,10 @@ Create an `.env.local` file with the following variables before starting the dev
 ```bash
 OPENAI_API_KEY=sk-...
 GITHUB_TOKEN=ghp_...
+APP_PASSWORD_SHA256=bdc398057a16edaab67ee1f361f9d59cc7f58c442364b1311590da49fb6fd2a9
 ```
+
+`APP_PASSWORD_SHA256` stores the SHA-256 digest of the access password. The value above corresponds to `darktalent2024!`; replace it with your own digest if you change the password.
 
 The GitHub token is optional but recommended to avoid rate limits. Never commit this file.
 

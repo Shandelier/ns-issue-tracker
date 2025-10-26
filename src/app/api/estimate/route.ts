@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import OpenAI from "openai";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { createHash } from "crypto";
 import { extname, join } from "path";
 import { mkdir, writeFile } from "fs/promises";
+import { AUTH_COOKIE_NAME, isAuthorizedCookie, readConfiguredPasswordHash } from "@/lib/auth";
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxyUrl) {
@@ -737,6 +739,18 @@ ${JSON.stringify(issueSummaries)}`;
 
 export async function POST(request: Request) {
   try {
+    let expectedHash: string;
+    try {
+      expectedHash = readConfiguredPasswordHash();
+    } catch {
+      return NextResponse.json({ error: "Authentication is not configured" }, { status: 500 });
+    }
+
+    const cookieValue = cookies().get(AUTH_COOKIE_NAME)?.value;
+    if (!isAuthorizedCookie(cookieValue, expectedHash)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const repoUrl: string | undefined = body?.repoUrl;
     const githubToken: string | undefined = body?.githubToken;

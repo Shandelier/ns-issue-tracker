@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadSettingsFromStorage } from "@/lib/settings";
@@ -167,6 +167,11 @@ function RepoTreeItem({ node, depth, selectedSet, onToggle, disabled }: RepoTree
 }
 
 export default function HomePage() {
+  const [authorized, setAuthorized] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [issueLimit, setIssueLimit] = useState(DEFAULT_ISSUE_LIMIT);
@@ -233,6 +238,36 @@ export default function HomePage() {
     const csv = [header, ...rows].join("\n");
     return URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   }, [estimates, hasData]);
+
+  useEffect(() => {
+    let active = true;
+    const verify = async () => {
+      try {
+        const response = await fetch("/api/auth", { credentials: "include" });
+        if (!response.ok) {
+          throw new Error("Authentication is not available");
+        }
+        const payload = (await response.json()) as { authorized?: boolean };
+        if (!active) return;
+        setAuthorized(Boolean(payload.authorized));
+        setAuthError(null);
+      } catch (error) {
+        if (!active) return;
+        setAuthorized(false);
+        setAuthError(
+          error instanceof Error ? error.message : "Unable to verify authentication"
+        );
+      } finally {
+        if (active) {
+          setAuthChecked(true);
+        }
+      }
+    };
+    verify();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const stored = loadSettingsFromStorage();
@@ -344,6 +379,55 @@ export default function HomePage() {
     };
   }, [csvHref]);
 
+  const handlePasswordChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      if (authError) {
+        setAuthError(null);
+      }
+      setAuthPassword(event.target.value);
+    },
+    [authError]
+  );
+
+  const handlePasswordSubmit = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!authPassword.trim()) {
+        setAuthError("Password is required");
+        return;
+      }
+
+      setAuthLoading(true);
+      setAuthError(null);
+
+      try {
+        const response = await fetch("/api/auth", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ password: authPassword }),
+          credentials: "include",
+        });
+
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error ?? "Invalid password");
+        }
+
+        setAuthorized(true);
+        setAuthPassword("");
+      } catch (error) {
+        setAuthorized(false);
+        setAuthError(error instanceof Error ? error.message : "Unable to authenticate");
+      } finally {
+        setAuthLoading(false);
+        setAuthChecked(true);
+      }
+    },
+    [authPassword]
+  );
+
   const handleTogglePath = useCallback((path: string, type: "file" | "dir") => {
     setSelectedPaths((prev) => {
       const next = new Set(prev);
@@ -395,6 +479,7 @@ export default function HomePage() {
           headers: {
             "Content-Type": "application/json",
           },
+          credentials: "include",
           body: JSON.stringify({
             repoUrl: trimmedRepo,
             githubToken,
@@ -471,6 +556,7 @@ export default function HomePage() {
           headers: {
             "Content-Type": "application/json",
           },
+          credentials: "include",
           body: JSON.stringify({
             repoUrl: trimmedRepo,
             githubToken,
@@ -597,6 +683,58 @@ export default function HomePage() {
   const issueCountDescription = normalizedLimit
     ? `${normalizedLimit} issue${normalizedLimit === 1 ? "" : "s"}`
     : "All open issues";
+
+  if (!authChecked) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50">
+        <span className="text-sm text-slate-500">Checking access…</span>
+      </main>
+    );
+  }
+
+  if (!authorized) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+        <form
+          onSubmit={handlePasswordSubmit}
+          className="w-full max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+        >
+          <div className="space-y-2 text-center">
+            <h1 className="text-xl font-semibold text-slate-800">Enter Access Password</h1>
+            <p className="text-sm text-slate-500">
+              This app is protected. Provide the access password to continue.
+            </p>
+          </div>
+
+          <div className="space-y-2 text-left">
+            <label className="text-sm font-medium text-slate-700" htmlFor="accessPassword">
+              Password
+            </label>
+            <Input
+              id="accessPassword"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={authPassword}
+              onChange={handlePasswordChange}
+              disabled={authLoading}
+              required
+            />
+          </div>
+
+          {authError ? (
+            <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+              {authError}
+            </p>
+          ) : null}
+
+          <Button type="submit" className="w-full" disabled={authLoading}>
+            {authLoading ? "Verifying…" : "Unlock app"}
+          </Button>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <main className="container max-w-4xl space-y-10 py-16">
