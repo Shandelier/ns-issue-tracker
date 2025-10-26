@@ -2,6 +2,9 @@
 
 Minimal tool that scans a GitHub repository, sends open issues (defaults to the first five) to GPT-5 once, and produces a CSV with complexity and cost estimates.
 
+<img width="737" height="704" alt="image" src="https://github.com/user-attachments/assets/ab4f3b47-8882-4d92-b5be-2d243067dcdc" />
+
+
 ## Getting started
 
 ```bash
