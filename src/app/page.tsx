@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { loadSettingsFromStorage } from "@/lib/settings";
 
 interface IssueEstimate {
   issue_number: number;
@@ -232,6 +233,13 @@ export default function HomePage() {
     const csv = [header, ...rows].join("\n");
     return URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   }, [estimates, hasData]);
+
+  useEffect(() => {
+    const stored = loadSettingsFromStorage();
+    if (stored?.githubToken) {
+      setGithubToken(stored.githubToken);
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -616,21 +624,9 @@ export default function HomePage() {
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700" htmlFor="githubToken">
-              GitHub token (optional, increases rate limits)
-            </label>
-            <Input
-              id="githubToken"
-              type="password"
-              placeholder="ghp_..."
-              value={githubToken}
-              onChange={(event) => setGithubToken(event.target.value)}
-            />
-            <p className="text-xs text-slate-500">
-              A token avoids GitHub&apos;s low anonymous rate limits. It is never stored.
-            </p>
-          </div>
+          <p className="text-xs text-slate-500">
+            Need higher GitHub rate limits? Add your token in the Settings page first.
+          </p>
 
           <Button type="submit" disabled={isLoadingRepo} className="w-full sm:w-auto">
             {isLoadingRepo ? "Loading repository…" : "Load repository"}
