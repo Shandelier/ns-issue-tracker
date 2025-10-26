@@ -46,11 +46,13 @@ type EstimateResponse = {
   suggestedPaths?: string[];
   selectedFiles?: SelectedFileMeta[];
   fileContextChunks?: string[];
+  debugCapturePath?: string | null;
 };
 
 const STORAGE_KEY = "issue-estimator-cache-v2";
 const DEFAULT_ISSUE_LIMIT = "5";
 const MAX_SELECTED_FILES = 25;
+const DEBUG_CAPTURE_STORAGE_KEY = "issue-estimator-debug-capture";
 
 const sortPaths = (paths: string[]) => [...paths].sort((a, b) => a.localeCompare(b));
 
@@ -179,6 +181,10 @@ export default function HomePage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [isRepoLoaded, setIsRepoLoaded] = useState(false);
   const [loadingAction, setLoadingAction] = useState<"load-repo" | "estimate" | null>(null);
+  const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(false);
+  const [debugCapturePath, setDebugCapturePath] = useState<string | null>(null);
+  const [debugCopyState, setDebugCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const debugCopyTimeoutRef = useRef<number | null>(null);
 
   const trimmedRepo = repoUrl.trim();
 
@@ -230,6 +236,15 @@ export default function HomePage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    const stored = window.localStorage.getItem(DEBUG_CAPTURE_STORAGE_KEY);
+    if (stored) {
+      setDebugCaptureEnabled(stored === "true");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) {
@@ -273,6 +288,45 @@ export default function HomePage() {
       // ignore storage write errors
     }
   }, [cache, cacheReady]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        DEBUG_CAPTURE_STORAGE_KEY,
+        debugCaptureEnabled ? "true" : "false"
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [debugCaptureEnabled]);
+
+  useEffect(() => {
+    if (debugCopyTimeoutRef.current !== null) {
+      window.clearTimeout(debugCopyTimeoutRef.current);
+      debugCopyTimeoutRef.current = null;
+    }
+    setDebugCopyState("idle");
+    if (!debugCaptureEnabled) {
+      setDebugCapturePath(null);
+    }
+  }, [debugCaptureEnabled]);
+
+  useEffect(() => {
+    if (debugCopyTimeoutRef.current !== null) {
+      window.clearTimeout(debugCopyTimeoutRef.current);
+      debugCopyTimeoutRef.current = null;
+    }
+    setDebugCopyState("idle");
+  }, [debugCapturePath]);
+
+  useEffect(() => {
+    return () => {
+      if (debugCopyTimeoutRef.current !== null) {
+        window.clearTimeout(debugCopyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -394,12 +448,14 @@ export default function HomePage() {
         setEstimates(cachedResult.estimates);
         setSelectedFilesMeta(cachedResult.selectedFiles ?? []);
         setNotice(`Loaded cached estimates from ${new Date(cachedResult.savedAt).toLocaleString()}.`);
+        setDebugCapturePath(null);
         return;
       }
 
       setLoadingAction("estimate");
       setError(null);
       setNotice(null);
+      setDebugCapturePath(null);
 
       try {
         const response = await fetch("/api/estimate", {
@@ -413,6 +469,7 @@ export default function HomePage() {
             issueLimit: normalizedLimit,
             selectedPaths: effectiveSelection,
             branch,
+            debugCapture: debugCaptureEnabled,
           }),
         });
 
@@ -435,6 +492,7 @@ export default function HomePage() {
         if (payload.branch) {
           setBranch(payload.branch);
         }
+        setDebugCapturePath(payload.debugCapturePath ?? null);
 
         if (cacheKey) {
           setCache((prev) => ({
@@ -469,6 +527,7 @@ export default function HomePage() {
       normalizedLimit,
       selectionTrimmed,
       trimmedRepo,
+      debugCaptureEnabled,
     ]
   );
 
@@ -483,6 +542,37 @@ export default function HomePage() {
   const handleRefresh = useCallback(async () => {
     await runEstimation({ bypassCache: true });
   }, [runEstimation]);
+
+  const handleToggleDebugCapture = useCallback(() => {
+    setDebugCaptureEnabled((prev) => !prev);
+  }, []);
+
+  const handleCopyDebugPath = useCallback(async () => {
+    const scheduleReset = () => {
+      if (debugCopyTimeoutRef.current !== null) {
+        window.clearTimeout(debugCopyTimeoutRef.current);
+      }
+      debugCopyTimeoutRef.current = window.setTimeout(() => {
+        setDebugCopyState("idle");
+        debugCopyTimeoutRef.current = null;
+      }, 2000);
+    };
+
+    if (!debugCapturePath || typeof navigator === "undefined" || !navigator.clipboard) {
+      setDebugCopyState("error");
+      scheduleReset();
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(debugCapturePath);
+      setDebugCopyState("copied");
+    } catch {
+      setDebugCopyState("error");
+    }
+
+    scheduleReset();
+  }, [debugCapturePath]);
 
   const selectionSummary = useMemo(() => {
     if (!sortedSelection.length) {
@@ -674,14 +764,55 @@ export default function HomePage() {
                 {issueCountDescription} analyzed using {selectedFilesMeta.length} {selectedFilesMeta.length === 1 ? "context file" : "context files"}.
               </p>
             </div>
-            <a
-              href={csvHref}
-              download="issue-estimates.csv"
-              className="inline-flex items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Download CSV
-            </a>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleToggleDebugCapture}
+                aria-pressed={debugCaptureEnabled}
+                className={`text-sm font-medium underline-offset-4 hover:underline ${
+                  debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"
+                }`}
+              >
+                Debug capture: {debugCaptureEnabled ? "On" : "Off"}
+              </button>
+              <a
+                href={csvHref}
+                download="issue-estimates.csv"
+                className="inline-flex items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Download CSV
+              </a>
+            </div>
           </div>
+
+          {debugCaptureEnabled ? (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span>Debug capture is enabled.</span>
+              {debugCapturePath ? (
+                <>
+                  <span>Latest session:</span>
+                  <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] text-slate-600">
+                    {debugCapturePath}
+                  </code>
+                  <button
+                    type="button"
+                    className="font-medium text-slate-600 underline-offset-4 hover:underline"
+                    onClick={handleCopyDebugPath}
+                  >
+                    Copy path
+                  </button>
+                  {debugCopyState === "copied" ? (
+                    <span className="text-emerald-600">Copied!</span>
+                  ) : null}
+                  {debugCopyState === "error" ? (
+                    <span className="text-rose-500">Unable to copy</span>
+                  ) : null}
+                </>
+              ) : (
+                <span>Run an estimate to capture the current prompts.</span>
+              )}
+            </div>
+          ) : null}
 
           {selectedFilesMeta.length ? (
             <div className="space-y-2">

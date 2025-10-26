@@ -8,3 +8,5 @@ npm-debug.log*
 # generated csv downloads during dev
 issue-estimates.csv
 estimates.csv
+
+.openrouter-debug/

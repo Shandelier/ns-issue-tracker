@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { createHash } from "crypto";
-import { extname } from "path";
+import { extname, join } from "path";
+import { mkdir, writeFile } from "fs/promises";
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxyUrl) {
@@ -559,7 +560,104 @@ function coerceJsonPayload(rawText: string) {
   return JSON.parse(jsonText);
 }
 
-async function requestEstimates(issueSummaries: IssueSummary[], fileContexts: string[]) {
+type DebugCaptureOptions = {
+  enabledOverride?: boolean;
+  baseDirOverride?: string;
+};
+
+function isDebugCaptureEnabled(override?: boolean) {
+  if (typeof override === "boolean") {
+    return override;
+  }
+
+  const flag =
+    process.env.OPENROUTER_DEBUG_MODE ??
+    process.env.OPENROUTER_DEBUG ??
+    process.env.OPENROUTER_SAVE_PROMPTS;
+  if (!flag) {
+    return false;
+  }
+  const normalized = flag.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return !["0", "false", "off", "no"].includes(normalized);
+}
+
+function resolveDebugDirectory(explicitDir?: string) {
+  if (explicitDir && explicitDir.trim().length) {
+    return explicitDir;
+  }
+
+  return (
+    process.env.OPENROUTER_DEBUG_DIR ||
+    process.env.OPENROUTER_DEBUG_PATH ||
+    join(process.cwd(), ".openrouter-debug")
+  );
+}
+
+async function captureDebugPayload(
+  issueSummaries: IssueSummary[],
+  fileContexts: string[],
+  userPrompt: string,
+  options?: DebugCaptureOptions
+): Promise<string | null> {
+  if (!isDebugCaptureEnabled(options?.enabledOverride)) {
+    return null;
+  }
+
+  const now = new Date();
+  const baseDir = resolveDebugDirectory(options?.baseDirOverride);
+  const sessionId = `${now.toISOString().replace(/[:.]/g, "-")}-${Math.random()
+    .toString(16)
+    .slice(2, 8)}`;
+  const sessionDir = join(baseDir, sessionId);
+
+  try {
+    await mkdir(sessionDir, { recursive: true });
+
+    const metadata = {
+      createdAt: now.toISOString(),
+      issueCount: issueSummaries.length,
+      fileContextChunkCount: fileContexts.length,
+    };
+
+    const writes: Promise<void>[] = [
+      writeFile(join(sessionDir, "metadata.json"), JSON.stringify(metadata, null, 2), "utf8"),
+      writeFile(join(sessionDir, "issues.compact.json"), JSON.stringify(issueSummaries), "utf8"),
+      writeFile(join(sessionDir, "issues.pretty.json"), JSON.stringify(issueSummaries, null, 2), "utf8"),
+      writeFile(join(sessionDir, "prompt.txt"), userPrompt, "utf8"),
+    ];
+
+    if (fileContexts.length) {
+      writes.push(
+        writeFile(join(sessionDir, "file-contexts.txt"), fileContexts.join("\n\n"), "utf8")
+      );
+    }
+
+    for (const issue of issueSummaries) {
+      writes.push(
+        writeFile(
+          join(sessionDir, `issue-${issue.number}.json`),
+          JSON.stringify(issue, null, 2),
+          "utf8"
+        )
+      );
+    }
+
+    await Promise.all(writes);
+    return sessionDir;
+  } catch (error) {
+    console.warn("Failed to capture OpenRouter debug payload:", error);
+    return null;
+  }
+}
+
+async function requestEstimates(
+  issueSummaries: IssueSummary[],
+  fileContexts: string[],
+  options?: { debugCapture?: boolean }
+) {
   const apiKey =
     process.env.OPENROUTER_API_KEY ||
     process.env.OPENROUTER_KEY ||
@@ -582,6 +680,10 @@ ${JSON.stringify(issueSummaries)}`;
 
   const userPrompt = `${issuesSection}${filesSection}
 `;
+
+  const debugPath = await captureDebugPayload(issueSummaries, fileContexts, userPrompt, {
+    enabledOverride: options?.debugCapture,
+  });
 
   const referer = process.env.OPENROUTER_SITE_URL;
   const title = process.env.OPENROUTER_APP_TITLE || process.env.OPENROUTER_APP_NAME;
@@ -624,7 +726,10 @@ ${JSON.stringify(issueSummaries)}`;
         estimated_cost: string;
       }>;
     };
-    return parsed.estimates ?? [];
+    return {
+      estimates: parsed.estimates ?? [],
+      debugPath,
+    };
   } catch (error) {
     throw new Error("Unable to parse OpenRouter response");
   }
@@ -691,6 +796,9 @@ export async function POST(request: Request) {
       });
     }
 
+    const debugCaptureOverride =
+      typeof body?.debugCapture === "boolean" ? body.debugCapture : undefined;
+
     const issues = await fetchAllIssues(parsed.owner, parsed.repo, githubToken, issueLimit);
     if (issues.length === 0) {
       const emptyResponse: Record<string, unknown> = { estimates: [] };
@@ -719,7 +827,9 @@ export async function POST(request: Request) {
 
     const summaries = await buildIssuesPayload(issues, githubToken);
     const [{ contexts, files }, repoTree] = await Promise.all([fileContextsPromise, repoTreePromise]);
-    const estimates = await requestEstimates(summaries, contexts);
+    const { estimates, debugPath } = await requestEstimates(summaries, contexts, {
+      debugCapture: debugCaptureOverride,
+    });
 
     const enriched = summaries.map((issue) => {
       const match = estimates.find((estimate) => estimate.issue_number === issue.number);
@@ -752,6 +862,7 @@ export async function POST(request: Request) {
         truncated: file.truncated,
       })),
       fileContextChunks: contexts,
+      debugCapturePath: debugPath ?? undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected error";
