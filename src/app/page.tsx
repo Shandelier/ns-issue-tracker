@@ -892,6 +892,34 @@ export default function HomePage() {
               </label>
             </div>
           </form>
+          {debugCaptureEnabled ? (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span>Debug capture is enabled.</span>
+              {debugCapturePath ? (
+                <>
+                  <span>Latest session:</span>
+                  <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] text-slate-600">
+                    {debugCapturePath}
+                  </code>
+                  <button
+                    type="button"
+                    className="font-medium text-slate-600 underline-offset-4 hover:underline"
+                    onClick={handleCopyDebugPath}
+                  >
+                    Copy path
+                  </button>
+                  {debugCopyState === "copied" ? (
+                    <span className="text-emerald-600">Copied!</span>
+                  ) : null}
+                  {debugCopyState === "error" ? (
+                    <span className="text-rose-500">Unable to copy</span>
+                  ) : null}
+                </>
+              ) : (
+                <span>Run an estimate to capture the current prompts.</span>
+              )}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -926,35 +954,6 @@ export default function HomePage() {
               </a>
             </div>
           </div>
-
-          {debugCaptureEnabled ? (
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span>Debug capture is enabled.</span>
-              {debugCapturePath ? (
-                <>
-                  <span>Latest session:</span>
-                  <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] text-slate-600">
-                    {debugCapturePath}
-                  </code>
-                  <button
-                    type="button"
-                    className="font-medium text-slate-600 underline-offset-4 hover:underline"
-                    onClick={handleCopyDebugPath}
-                  >
-                    Copy path
-                  </button>
-                  {debugCopyState === "copied" ? (
-                    <span className="text-emerald-600">Copied!</span>
-                  ) : null}
-                  {debugCopyState === "error" ? (
-                    <span className="text-rose-500">Unable to copy</span>
-                  ) : null}
-                </>
-              ) : (
-                <span>Run an estimate to capture the current prompts.</span>
-              )}
-            </div>
-          ) : null}
 
           {selectedFilesMeta.length ? (
             <div className="space-y-2">
@@ -994,7 +993,7 @@ export default function HomePage() {
                         rel="noreferrer"
                         className="hover:underline"
                       >
-                        #{issue.issue_number}
+                        link{issue.issue_number}
                       </a>
                     </td>
                     <td className="px-3 py-2 text-slate-700">{issue.title}</td>
