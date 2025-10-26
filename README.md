@@ -25,7 +25,8 @@ The GitHub token is optional but recommended to avoid rate limits. Never commit 
 ## Usage
 
 usually hosted on localhost:3000
-provide password and github url.
+provide password and github url, for example:
+https://github.com/AykutSarac/jsoncrack.com
 
 ## Tech stack
 
