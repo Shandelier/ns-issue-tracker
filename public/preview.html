@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Issue Estimator Preview</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background-color: #f8fafc;
+      }
+      body {
+        margin: 0;
+        background-color: #f8fafc;
+        color: #0f172a;
+      }
+      .container {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 64px 24px;
+      }
+      h1 {
+        font-size: 2rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        text-align: center;
+      }
+      p.description {
+        color: #475569;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        text-align: center;
+        margin-bottom: 2.5rem;
+      }
+      form {
+        display: grid;
+        gap: 1.5rem;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #334155;
+      }
+      input {
+        width: 100%;
+        padding: 0.65rem 0.75rem;
+        border-radius: 0.5rem;
+        border: 1px solid #cbd5f5;
+        font-size: 0.95rem;
+        background: white;
+      }
+      .button {
+        width: 100%;
+        padding: 0.7rem 0.75rem;
+        border-radius: 0.55rem;
+        border: none;
+        background: #0f172a;
+        color: white;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      .button-outline {
+        width: 100%;
+        padding: 0.7rem 0.75rem;
+        border-radius: 0.55rem;
+        border: 1px solid #cbd5f5;
+        background: white;
+        color: #0f172a;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      .cache-note {
+        font-size: 0.7rem;
+        color: #475569;
+        margin-top: 0.35rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        background: white;
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
+      }
+      thead {
+        background: #f1f5f9;
+        text-align: left;
+      }
+      th, td {
+        padding: 0.75rem;
+        font-size: 0.9rem;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      tbody tr:hover {
+        background: #f8fafc;
+      }
+      .preview-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 2rem 0 1rem;
+      }
+      .preview-header h2 {
+        font-size: 1.1rem;
+        margin: 0;
+      }
+      .download-link {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #0f172a;
+        text-decoration: none;
+      }
+      .download-link:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Issue Estimator</h1>
+      <p class="description">
+        Minimal tool that scans a GitHub repository, sends the first few issues to GPT-5 once (defaults to five), and returns a CSV with estimated effort and cost.
+      </p>
+      <form>
+        <div>
+          <label for="repo">GitHub repository URL</label>
+          <input id="repo" placeholder="https://github.com/org/project" />
+        </div>
+        <div>
+          <label for="limit">Issue limit (optional)</label>
+          <input id="limit" inputmode="numeric" pattern="[0-9]*" placeholder="Leave blank for all issues" value="5" />
+          <p class="cache-note">Defaults to 5 issues to keep runs quick.</p>
+        </div>
+        <div>
+          <label for="token">GitHub token (optional, increases rate limits)</label>
+          <input id="token" type="password" placeholder="ghp_..." />
+        </div>
+        <div>
+          <button class="button" type="button">Generate CSV</button>
+          <button class="button-outline" type="button">Refresh from GitHub</button>
+          <p class="cache-note">Cached locally 4/10/2025, 2:45 PM.</p>
+        </div>
+      </form>
+      <section>
+        <div class="preview-header">
+          <h2>Preview</h2>
+          <a class="download-link" href="#">Download CSV</a>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Title</th>
+              <th>Complexity</th>
+              <th>Estimate</th>
+              <th>Labels</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="#">#123</a></td>
+              <td>Improve onboarding documentation</td>
+              <td>Medium</td>
+              <td>$420</td>
+              <td>docs, good first issue</td>
+            </tr>
+            <tr>
+              <td><a href="#">#124</a></td>
+              <td>Refactor auth session persistence</td>
+              <td>High</td>
+              <td>$980</td>
+              <td>backend, needs investigation</td>
+            </tr>
+            <tr>
+              <td><a href="#">#127</a></td>
+              <td>Add CSV export to analytics dashboard</td>
+              <td>Low</td>
+              <td>$260</td>
+              <td>feature</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

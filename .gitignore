@@ -1,0 +1,10 @@
+node_modules
+.next
+.env
+.env.local
+.DS_Store
+npm-debug.log*
+
+# generated csv downloads during dev
+issue-estimates.csv
+estimates.csv
