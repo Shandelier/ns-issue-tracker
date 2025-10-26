@@ -853,25 +853,37 @@ export default function HomePage() {
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit" disabled={isEstimating} className="w-full sm:w-auto">
-                {isEstimating ? "Estimating issues…" : "Generate estimates"}
-              </Button>
-              {cachedResult ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleRefresh}
-                    disabled={isEstimating}
-                  >
-                    Refresh from GitHub
-                  </Button>
-                  <p className="text-xs text-slate-500">
-                    Cached on {new Date(cachedResult.savedAt).toLocaleString()}.
-                  </p>
-                </>
-              ) : null}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" disabled={isEstimating} className="w-full sm:w-auto">
+                  {isEstimating ? "Estimating issues…" : "Generate estimates"}
+                </Button>
+                {cachedResult ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleRefresh}
+                      disabled={isEstimating}
+                    >
+                      Refresh from GitHub
+                    </Button>
+                    <p className="text-xs text-slate-500">
+                      Cached on {new Date(cachedResult.savedAt).toLocaleString()}.
+                    </p>
+                  </>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleDebugCapture}
+                aria-pressed={debugCaptureEnabled}
+                className={`text-sm font-medium underline-offset-4 hover:underline ${
+                  debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"
+                }`}
+              >
+                Debug capture: {debugCaptureEnabled ? "On" : "Off"}
+              </button>
             </div>
           </form>
         </section>
@@ -899,16 +911,13 @@ export default function HomePage() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={handleToggleDebugCapture}
-                aria-pressed={debugCaptureEnabled}
-                className={`text-sm font-medium underline-offset-4 hover:underline ${
+              <span
+                className={`text-sm font-medium ${
                   debugCaptureEnabled ? "text-emerald-600" : "text-slate-500"
                 }`}
               >
                 Debug capture: {debugCaptureEnabled ? "On" : "Off"}
-              </button>
+              </span>
               <a
                 href={csvHref}
                 download="issue-estimates.csv"
