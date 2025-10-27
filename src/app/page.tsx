@@ -50,6 +50,7 @@ type EstimateResponse = {
   selectedFiles?: SelectedFileMeta[];
   fileContextChunks?: string[];
   debugCapturePath?: string | null;
+  hasMore?: boolean;
 };
 
 type RemoteProgressSnapshot = {
@@ -66,6 +67,7 @@ type RemoteProgressSnapshot = {
 
 const STORAGE_KEY = "issue-estimator-cache-v2";
 const DEFAULT_ISSUE_LIMIT = "";
+const ISSUE_BATCH_SIZE = 5;
 const MAX_SELECTED_FILES = 25;
 const DEBUG_CAPTURE_STORAGE_KEY = "issue-estimator-debug-capture";
 
@@ -752,61 +754,126 @@ export default function HomePage() {
       setDebugCapturePath(null);
 
       try {
-        const requestBody: Record<string, unknown> = {
+        const baseRequestBody: Record<string, unknown> = {
           repoUrl: trimmedRepo,
           githubToken,
-          issueLimit: normalizedLimit,
           selectedPaths: effectiveSelection,
           branch,
           debugCapture: debugCaptureEnabled,
         };
         if (openRouterModel) {
-          requestBody.model = openRouterModel;
+          baseRequestBody.model = openRouterModel;
         }
         if (requestProgressId) {
-          requestBody.progressId = requestProgressId;
+          baseRequestBody.progressId = requestProgressId;
         }
 
-        const response = await fetch("/api/estimate", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify(requestBody),
-        });
+        const aggregatedEstimates: IssueEstimate[] = [];
+        let aggregatedSelectedFiles: SelectedFileMeta[] | undefined;
+        let aggregatedRepoTree: RepoTreeNode[] | undefined;
+        let aggregatedSuggestedPaths: string[] | undefined;
+        let aggregatedBranch = branch;
+        let latestDebugPath: string | null = null;
 
-        if (!response.ok) {
-          const payload = await response.json().catch(() => null);
-          throw new Error(payload?.error ?? "Unable to generate estimates");
-        }
+        const limitedRun = typeof normalizedLimit === "number";
+        let remaining = limitedRun ? normalizedLimit ?? 0 : 0;
+        let currentPage = 1;
 
-        const payload = (await response.json()) as EstimateResponse;
-        const nextEstimates = payload.estimates ?? [];
+        while (true) {
+          const batchSize = limitedRun
+            ? Math.min(ISSUE_BATCH_SIZE, Math.max(remaining, 0))
+            : ISSUE_BATCH_SIZE;
 
-        setEstimates(nextEstimates);
-        setSelectedFilesMeta(Array.isArray(payload.selectedFiles) ? payload.selectedFiles : []);
-        if (Array.isArray(payload.repoTree) && payload.repoTree.length > 0) {
-          setRepoTree(payload.repoTree);
-          if (Array.isArray(payload.suggestedPaths)) {
-            setSuggestedPaths(payload.suggestedPaths);
+          if (limitedRun && batchSize <= 0) {
+            break;
           }
+
+          const response = await fetch("/api/estimate", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              ...baseRequestBody,
+              issuePage: currentPage,
+              issueLimit: batchSize,
+            }),
+          });
+
+          if (!response.ok) {
+            const payload = await response.json().catch(() => null);
+            throw new Error(payload?.error ?? "Unable to generate estimates");
+          }
+
+          const payload = (await response.json()) as EstimateResponse;
+          const batchEstimates = payload.estimates ?? [];
+          aggregatedEstimates.push(...batchEstimates);
+
+          if (Array.isArray(payload.selectedFiles) && payload.selectedFiles.length) {
+            aggregatedSelectedFiles = payload.selectedFiles;
+          }
+
+          if (Array.isArray(payload.repoTree) && payload.repoTree.length) {
+            aggregatedRepoTree = payload.repoTree;
+            if (Array.isArray(payload.suggestedPaths)) {
+              aggregatedSuggestedPaths = payload.suggestedPaths;
+            }
+          } else if (Array.isArray(payload.suggestedPaths) && payload.suggestedPaths.length) {
+            aggregatedSuggestedPaths = payload.suggestedPaths;
+          }
+
+          if (payload.branch) {
+            aggregatedBranch = payload.branch;
+          }
+
+          if (payload.debugCapturePath) {
+            latestDebugPath = payload.debugCapturePath;
+          }
+
+          const hasMoreFlag = payload.hasMore ?? (batchEstimates.length >= batchSize);
+
+          if (limitedRun) {
+            remaining = Math.max(remaining - batchEstimates.length, 0);
+          }
+
+          if (batchEstimates.length === 0 && hasMoreFlag) {
+            currentPage += 1;
+            continue;
+          }
+
+          if (!hasMoreFlag || (limitedRun && remaining <= 0)) {
+            break;
+          }
+
+          currentPage += 1;
         }
-        if (payload.branch) {
-          setBranch(payload.branch);
+
+        setEstimates(aggregatedEstimates);
+        setSelectedFilesMeta(aggregatedSelectedFiles ?? []);
+        if (aggregatedRepoTree && aggregatedRepoTree.length > 0) {
+          setRepoTree(aggregatedRepoTree);
+          if (Array.isArray(aggregatedSuggestedPaths)) {
+            setSuggestedPaths(aggregatedSuggestedPaths);
+          }
+        } else if (Array.isArray(aggregatedSuggestedPaths)) {
+          setSuggestedPaths(aggregatedSuggestedPaths);
         }
-        setDebugCapturePath(payload.debugCapturePath ?? null);
+        if (aggregatedBranch) {
+          setBranch(aggregatedBranch);
+        }
+        setDebugCapturePath(latestDebugPath);
 
         if (cacheKey) {
           setCache((prev) => ({
             ...prev,
             [cacheKey]: {
-              estimates: nextEstimates,
+              estimates: aggregatedEstimates,
               savedAt: Date.now(),
               limit: normalizedLimit ?? null,
               selectedPaths: effectiveSelection,
-              branch: payload.branch ?? branch,
-              selectedFiles: payload.selectedFiles,
+              branch: aggregatedBranch ?? branch,
+              selectedFiles: aggregatedSelectedFiles,
               ...(openRouterModel ? { model: openRouterModel } : {}),
             },
           }));
