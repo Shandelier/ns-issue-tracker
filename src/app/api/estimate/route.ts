@@ -693,7 +693,7 @@ async function requestEstimates(
 ) {
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of solving the GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
-and estimated_cost (a string like "$250"). Use the details about the issue and files content selected by the user. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
+and estimated_cost (a string like "$250"). Use the details about the issue and repo files selected by the user for precise estimation. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
 
   const issuesSection = `Here are the issues from a repository. Analyze them collectively and respond with JSON only.
 ${JSON.stringify(issueSummaries)}`;
