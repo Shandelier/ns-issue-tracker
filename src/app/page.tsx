@@ -3,6 +3,7 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { loadSettingsFromStorage } from "@/lib/settings";
 
 interface IssueEstimate {
@@ -49,6 +50,18 @@ type EstimateResponse = {
   selectedFiles?: SelectedFileMeta[];
   fileContextChunks?: string[];
   debugCapturePath?: string | null;
+};
+
+type RemoteProgressSnapshot = {
+  id: string;
+  stage: string;
+  label: string;
+  hint?: string | null;
+  message?: string | null;
+  value: number;
+  startedAt: number;
+  updatedAt: number;
+  error?: string | null;
 };
 
 const STORAGE_KEY = "issue-estimator-cache-v2";
@@ -194,6 +207,11 @@ export default function HomePage() {
   const [debugCopyState, setDebugCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [openRouterModel, setOpenRouterModel] = useState<string | null>(null);
   const debugCopyTimeoutRef = useRef<number | null>(null);
+  const progressStartRef = useRef<number | null>(null);
+  const [progressElapsedMs, setProgressElapsedMs] = useState(0);
+  const [progressSnapshot, setProgressSnapshot] = useState<RemoteProgressSnapshot | null>(null);
+  const [activeProgressId, setActiveProgressId] = useState<string | null>(null);
+  const progressPollRef = useRef<number | null>(null);
 
   const trimmedRepo = repoUrl.trim();
 
@@ -228,6 +246,74 @@ export default function HomePage() {
   const hasData = estimates.length > 0;
   const isLoadingRepo = loadingAction === "load-repo";
   const isEstimating = loadingAction === "estimate";
+
+  const progressValue = useMemo(() => {
+    if (!loadingAction) return 0;
+    if (loadingAction === "estimate" && progressSnapshot) {
+      const percent = Math.round(progressSnapshot.value * 100);
+      return Math.min(Math.max(percent, 5), 100);
+    }
+    const target = loadingAction === "estimate" ? 45_000 : 12_000;
+    const computed = (progressElapsedMs / target) * 100;
+    const capped = Math.min(computed, 95);
+    return Math.max(8, capped);
+  }, [loadingAction, progressElapsedMs, progressSnapshot]);
+
+  const progressElapsedLabel = useMemo(() => {
+    if (!loadingAction) return "";
+    if (progressElapsedMs < 900) {
+      return "<1s elapsed";
+    }
+    if (progressElapsedMs < 60_000) {
+      return `${(progressElapsedMs / 1000).toFixed(1)}s elapsed`;
+    }
+    const minutes = Math.floor(progressElapsedMs / 60_000);
+    const seconds = Math.floor((progressElapsedMs % 60_000) / 1000);
+    return `${minutes}m ${seconds.toString().padStart(2, "0")}s elapsed`;
+  }, [loadingAction, progressElapsedMs]);
+
+  const progressLabel = useMemo(() => {
+    if (loadingAction === "estimate") {
+      return progressSnapshot?.label ?? "Estimating issues…";
+    }
+    if (loadingAction === "load-repo") {
+      return "Loading repository…";
+    }
+    return "";
+  }, [loadingAction, progressSnapshot]);
+
+  const progressHint = useMemo(() => {
+    if (loadingAction === "estimate") {
+      return progressSnapshot?.hint ?? "Fetching GitHub data and waiting for the LLM response. Large batches may take a bit.";
+    }
+    if (loadingAction === "load-repo") {
+      return "Collecting repository metadata and suggested context files.";
+    }
+    return "";
+  }, [loadingAction, progressSnapshot]);
+
+  const progressMessage = useMemo(() => {
+    if (loadingAction === "estimate") {
+      return progressSnapshot?.message ?? "";
+    }
+    return "";
+  }, [loadingAction, progressSnapshot]);
+
+  const progressCard = loadingAction ? (
+    <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <span className="text-sm font-semibold text-slate-700">{progressLabel}</span>
+        {progressElapsedLabel ? (
+          <span className="text-xs text-slate-500">{progressElapsedLabel}</span>
+        ) : null}
+      </div>
+      <Progress value={progressValue} />
+      {progressHint ? <p className="text-xs text-slate-500">{progressHint}</p> : null}
+      {progressMessage && progressMessage !== progressHint ? (
+        <p className="text-xs text-slate-500">{progressMessage}</p>
+      ) : null}
+    </section>
+  ) : null;
 
   const csvHref = useMemo(() => {
     if (!hasData) return "";
@@ -395,6 +481,80 @@ export default function HomePage() {
     };
   }, [csvHref]);
 
+  useEffect(() => {
+    if (!loadingAction) {
+      progressStartRef.current = null;
+      setProgressElapsedMs(0);
+      return;
+    }
+
+    progressStartRef.current = Date.now();
+
+    const updateElapsed = () => {
+      if (progressStartRef.current !== null) {
+        setProgressElapsedMs(Date.now() - progressStartRef.current);
+      }
+    };
+
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadingAction]);
+
+  useEffect(() => {
+    if (!activeProgressId || typeof window === "undefined") {
+      if (progressPollRef.current !== null) {
+        window.clearInterval(progressPollRef.current);
+        progressPollRef.current = null;
+      }
+      setProgressSnapshot(null);
+      return;
+    }
+
+    let disposed = false;
+    let fetching = false;
+
+    setProgressSnapshot(null);
+
+    const fetchProgress = async () => {
+      if (fetching) return;
+      fetching = true;
+      try {
+        const response = await fetch(`/api/progress/${encodeURIComponent(activeProgressId)}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          if (response.status === 404) {
+            return;
+          }
+          return;
+        }
+        const payload = (await response.json()) as RemoteProgressSnapshot;
+        if (!disposed) {
+          setProgressSnapshot(payload);
+        }
+      } catch {
+        // ignore polling errors
+      } finally {
+        fetching = false;
+      }
+    };
+
+    fetchProgress();
+    progressPollRef.current = window.setInterval(fetchProgress, 1000);
+
+    return () => {
+      disposed = true;
+      if (progressPollRef.current !== null) {
+        window.clearInterval(progressPollRef.current);
+        progressPollRef.current = null;
+      }
+    };
+  }, [activeProgressId]);
+
   const handlePasswordChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       if (authError) {
@@ -554,6 +714,7 @@ export default function HomePage() {
   const runEstimation = useCallback(
     async (options?: { bypassCache?: boolean }) => {
       const bypassCache = options?.bypassCache ?? false;
+      let requestProgressId: string | null = null;
 
       if (!trimmedRepo) {
         setError("Please enter a repository URL");
@@ -569,8 +730,18 @@ export default function HomePage() {
         setSelectedFilesMeta(cachedResult.selectedFiles ?? []);
         setNotice(`Loaded cached estimates from ${new Date(cachedResult.savedAt).toLocaleString()}.`);
         setDebugCapturePath(null);
+        setActiveProgressId(null);
+        setProgressSnapshot(null);
         return;
       }
+
+      if (typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function") {
+        requestProgressId = window.crypto.randomUUID();
+        setActiveProgressId(requestProgressId);
+      } else {
+        setActiveProgressId(null);
+      }
+      setProgressSnapshot(null);
 
       setLoadingAction("estimate");
       setError(null);
@@ -588,6 +759,9 @@ export default function HomePage() {
         };
         if (openRouterModel) {
           requestBody.model = openRouterModel;
+        }
+        if (requestProgressId) {
+          requestBody.progressId = requestProgressId;
         }
 
         const response = await fetch("/api/estimate", {
@@ -641,6 +815,8 @@ export default function HomePage() {
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unexpected error while estimating issues");
       } finally {
+        setActiveProgressId(null);
+        setProgressSnapshot(null);
         setLoadingAction(null);
       }
     },
@@ -819,6 +995,8 @@ export default function HomePage() {
         ) : null}
       </section>
 
+      {loadingAction === "load-repo" ? progressCard : null}
+
       {isRepoLoaded ? (
         <section className="space-y-4 rounded-lg border border-slate-200 p-6 shadow-sm">
           <div className="flex flex-col gap-1">
@@ -985,6 +1163,8 @@ export default function HomePage() {
           ) : null}
         </section>
       ) : null}
+
+      {loadingAction === "estimate" ? progressCard : null}
 
       {error ? (
         <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">

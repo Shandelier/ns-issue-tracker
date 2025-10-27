@@ -5,6 +5,7 @@ import { extname, join } from "path";
 import { mkdir, writeFile } from "fs/promises";
 import { AUTH_COOKIE_NAME, isAuthorizedCookie, readConfiguredPasswordHash } from "@/lib/auth";
 import { githubRequestJson, openRouterChat } from "@/lib/server/external-apis";
+import { ProgressOverrides, ProgressStage, setProgressStage } from "@/lib/server/progress";
 
 export const runtime = "nodejs";
 
@@ -637,10 +638,16 @@ async function captureDebugPayload(
   }
 }
 
+type RequestEstimatesOptions = {
+  debugCapture?: boolean;
+  model?: string;
+  progress?: (stage: ProgressStage, overrides?: ProgressOverrides) => void;
+};
+
 async function requestEstimates(
   issueSummaries: IssueSummary[],
   fileContexts: string[],
-  options?: { debugCapture?: boolean; model?: string }
+  options?: RequestEstimatesOptions
 ) {
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
@@ -668,6 +675,9 @@ ${JSON.stringify(issueSummaries)}`;
       ? envDefault
       : "x-ai/grok-code-fast-1";
 
+  options?.progress?.("calling_openrouter", {
+    message: `Requesting estimates from OpenRouter using ${model}.`,
+  });
   const { content } = await openRouterChat({
     model,
     temperature: 0.2,
@@ -677,6 +687,9 @@ ${JSON.stringify(issueSummaries)}`;
     ],
   });
 
+  options?.progress?.("parsing_response", {
+    message: "Parsing OpenRouter response.",
+  });
   try {
     const parsed = coerceJsonPayload(content) as {
       estimates?: Array<{
@@ -695,6 +708,8 @@ ${JSON.stringify(issueSummaries)}`;
 }
 
 export async function POST(request: Request) {
+  let updateProgress: ((stage: ProgressStage, overrides?: ProgressOverrides) => void) | undefined;
+
   try {
     let expectedHash: string;
     try {
@@ -735,6 +750,13 @@ export async function POST(request: Request) {
         ? body.branch.trim()
         : undefined;
     const needBranchInfo = listRepoFiles || selectedPaths.length > 0 || onlyRepoTree;
+    const rawProgressId = typeof body?.progressId === "string" ? body.progressId.trim() : "";
+    const progressId =
+      rawProgressId && /^[a-zA-Z0-9_-]{6,80}$/.test(rawProgressId) ? rawProgressId : undefined;
+    updateProgress = progressId
+      ? (stage: ProgressStage, overrides?: ProgressOverrides) =>
+          setProgressStage(progressId, stage, overrides)
+      : undefined;
 
     if (!repoUrl) {
       return NextResponse.json({ error: "Repository URL is required" }, { status: 400 });
@@ -743,6 +765,10 @@ export async function POST(request: Request) {
     const parsed = parseGitHubUrl(repoUrl);
     if (!parsed) {
       return NextResponse.json({ error: "Invalid GitHub repository URL" }, { status: 400 });
+    }
+
+    if (updateProgress) {
+      updateProgress("pending", { message: "Preparing estimation request." });
     }
 
     let branchRef = preferredBranch as string | undefined;
@@ -754,6 +780,9 @@ export async function POST(request: Request) {
     const resolvedBranch = branchRef ?? "main";
 
     if (onlyRepoTree) {
+      updateProgress?.("repo_tree", {
+        message: `Fetching repository tree (depth ${treeDepth}).`,
+      });
       const repoTree = await fetchRepoTree(
         parsed.owner,
         parsed.repo,
@@ -762,6 +791,9 @@ export async function POST(request: Request) {
         resolvedBranch
       );
       const suggestedPaths = repoTree.length ? suggestDefaultPaths(repoTree) : [];
+      updateProgress?.("complete", {
+        message: `Loaded ${repoTree.length} top-level entries.`,
+      });
       return NextResponse.json({
         repoTree,
         branch: resolvedBranch,
@@ -772,8 +804,14 @@ export async function POST(request: Request) {
     const debugCaptureOverride =
       typeof body?.debugCapture === "boolean" ? body.debugCapture : undefined;
 
+    updateProgress?.("fetching_issues", {
+      message: issueLimit
+        ? `Requesting up to ${issueLimit} open issues from GitHub.`
+        : "Requesting all open issues from GitHub.",
+    });
     const issues = await fetchAllIssues(parsed.owner, parsed.repo, githubToken, issueLimit);
     if (issues.length === 0) {
+      updateProgress?.("complete", { message: "No open issues detected in the repository." });
       const emptyResponse: Record<string, unknown> = { estimates: [] };
       if (listRepoFiles) {
         const repoTree = await fetchRepoTree(
@@ -790,6 +828,9 @@ export async function POST(request: Request) {
       return NextResponse.json(emptyResponse);
     }
 
+    updateProgress?.("collecting_context", {
+      message: `Fetched ${issues.length} open issue${issues.length === 1 ? "" : "s"}. Collecting context...`,
+    });
     const repoTreePromise = listRepoFiles
       ? fetchRepoTree(parsed.owner, parsed.repo, githubToken, treeDepth, resolvedBranch)
       : Promise.resolve<RepoTreeNode[] | undefined>(undefined);
@@ -799,10 +840,20 @@ export async function POST(request: Request) {
       : Promise.resolve({ contexts: [] as string[], files: [] as FileContext[] });
 
     const summaries = await buildIssuesPayload(issues, githubToken);
+    updateProgress?.("preparing_prompt", {
+      message: `Prepared ${summaries.length} issue summary${summaries.length === 1 ? "" : "ies"}.`,
+    });
     const [{ contexts, files }, repoTree] = await Promise.all([fileContextsPromise, repoTreePromise]);
+    if (contexts.length) {
+      updateProgress?.("collecting_context", {
+        message: `Included ${contexts.length} context chunk${contexts.length === 1 ? "" : "s"} in the prompt.`,
+        value: 0.5,
+      });
+    }
     const { estimates, debugPath } = await requestEstimates(summaries, contexts, {
       debugCapture: debugCaptureOverride,
       model: requestedModel,
+      progress: updateProgress,
     });
 
     const enriched = summaries.map((issue) => {
@@ -823,6 +874,9 @@ export async function POST(request: Request) {
 
     const branchField = needBranchInfo || preferredBranch ? resolvedBranch : undefined;
 
+    updateProgress?.("complete", {
+      message: `Generated estimates for ${enriched.length} issue${enriched.length === 1 ? "" : "s"}.`,
+    });
     return NextResponse.json({
       estimates: enriched,
       repoTree,
@@ -840,6 +894,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected error";
+    updateProgress?.("error", { error: message, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -13,7 +13,7 @@ if (proxyUrl) {
 const DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.EXTERNAL_API_TIMEOUT_MS ?? "", 10);
 const FALLBACK_TIMEOUT_MS = Number.isFinite(DEFAULT_TIMEOUT_MS) && DEFAULT_TIMEOUT_MS > 0
   ? DEFAULT_TIMEOUT_MS
-  : 15_000;
+  : 60_000;
 
 const DEBUG_EXTERNAL_API = normalizeBoolean(process.env.EXTERNAL_API_DEBUG);
 
