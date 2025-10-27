@@ -78,7 +78,7 @@ async function fetchIssues(
 
   if (page) {
     const effectiveLimit = limit ?? DEFAULT_ISSUE_BATCH_SIZE;
-    const requestPageSize = Math.min(effectiveLimit, 100);
+    const requestPageSize = Math.min(effectiveLimit + 1, 100);
     const { data: batch } = await githubRequestJson<GitHubIssue[]>(
       `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${requestPageSize}&page=${page}`,
       { token: githubToken }
@@ -90,7 +90,7 @@ async function fetchIssues(
 
     const filtered = batch.filter((issue: any) => !issue.pull_request);
     const trimmed = filtered.slice(0, effectiveLimit);
-    const hasMore = filtered.length === requestPageSize;
+    const hasMore = filtered.length > trimmed.length || batch.length === requestPageSize;
     return { issues: trimmed, hasMore };
   }
 
@@ -103,7 +103,7 @@ async function fetchIssues(
       return { issues: issues.slice(0, limit), hasMore: true };
     }
 
-    const perPage = remaining ? Math.min(remaining, 100) : 100;
+    const perPage = remaining ? Math.min(remaining + 1, 100) : 100;
     const { data: batch } = await githubRequestJson<GitHubIssue[]>(
       `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${perPage}&page=${pageIndex}`,
       { token: githubToken }
@@ -114,13 +114,14 @@ async function fetchIssues(
     }
 
     const filtered = batch.filter((issue: any) => !issue.pull_request);
-    issues.push(...filtered);
+    const trimmed = remaining ? filtered.slice(0, Math.max(remaining, 0)) : filtered;
+    issues.push(...trimmed);
 
     if (limit && issues.length >= limit) {
-      return { issues: issues.slice(0, limit), hasMore: filtered.length === perPage };
+      return { issues: issues.slice(0, limit), hasMore: batch.length === perPage };
     }
 
-    if (filtered.length < perPage) {
+    if (batch.length < perPage) {
       break;
     }
     pageIndex += 1;

@@ -831,12 +831,18 @@ export default function HomePage() {
             latestDebugPath = payload.debugCapturePath;
           }
 
+          const hasMoreFlag = payload.hasMore ?? (batchEstimates.length >= batchSize);
+
           if (limitedRun) {
             remaining = Math.max(remaining - batchEstimates.length, 0);
           }
 
-          const hasMoreFlag = payload.hasMore ?? (batchEstimates.length >= batchSize);
-          if (!hasMoreFlag || batchEstimates.length === 0 || (limitedRun && remaining <= 0)) {
+          if (batchEstimates.length === 0 && hasMoreFlag) {
+            currentPage += 1;
+            continue;
+          }
+
+          if (!hasMoreFlag || (limitedRun && remaining <= 0)) {
             break;
           }
 
