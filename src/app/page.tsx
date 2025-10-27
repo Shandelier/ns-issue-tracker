@@ -526,10 +526,13 @@ export default function HomePage() {
         const response = await fetch(`/api/progress/${encodeURIComponent(activeProgressId)}`, {
           cache: "no-store",
         });
-        if (!response.ok) {
-          if (response.status === 404) {
-            return;
+        if (response.status === 204) {
+          if (!disposed) {
+            setProgressSnapshot(null);
           }
+          return;
+        }
+        if (!response.ok) {
           return;
         }
         const payload = (await response.json()) as RemoteProgressSnapshot;

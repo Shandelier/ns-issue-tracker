@@ -758,6 +758,10 @@ export async function POST(request: Request) {
           setProgressStage(progressId, stage, overrides)
       : undefined;
 
+    if (updateProgress) {
+      updateProgress("pending", { message: "Preparing estimation request." });
+    }
+
     if (!repoUrl) {
       return NextResponse.json({ error: "Repository URL is required" }, { status: 400 });
     }
@@ -765,10 +769,6 @@ export async function POST(request: Request) {
     const parsed = parseGitHubUrl(repoUrl);
     if (!parsed) {
       return NextResponse.json({ error: "Invalid GitHub repository URL" }, { status: 400 });
-    }
-
-    if (updateProgress) {
-      updateProgress("pending", { message: "Preparing estimation request." });
     }
 
     let branchRef = preferredBranch as string | undefined;

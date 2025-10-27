@@ -17,12 +17,13 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   const snapshot = getProgressSnapshot(id);
   if (!snapshot) {
-    return NextResponse.json({ status: "not-found" }, { status: 404 });
+    return new NextResponse(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
-  return NextResponse.json(snapshot, {
-    headers: {
-      "Cache-Control": "no-store",
-    },
-  });
+  return NextResponse.json(snapshot, { headers: { "Cache-Control": "no-store" } });
 }
