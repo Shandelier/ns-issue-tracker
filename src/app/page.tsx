@@ -52,7 +52,7 @@ type EstimateResponse = {
 };
 
 const STORAGE_KEY = "issue-estimator-cache-v2";
-const DEFAULT_ISSUE_LIMIT = "5";
+const DEFAULT_ISSUE_LIMIT = "";
 const MAX_SELECTED_FILES = 25;
 const DEBUG_CAPTURE_STORAGE_KEY = "issue-estimator-debug-capture";
 
@@ -176,6 +176,7 @@ export default function HomePage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [issueLimit, setIssueLimit] = useState(DEFAULT_ISSUE_LIMIT);
+  const [includeAllIssues, setIncludeAllIssues] = useState(true);
   const [repoTree, setRepoTree] = useState<RepoTreeNode[]>([]);
   const [branch, setBranch] = useState<string | undefined>(undefined);
   const [suggestedPaths, setSuggestedPaths] = useState<string[]>([]);
@@ -197,12 +198,13 @@ export default function HomePage() {
   const trimmedRepo = repoUrl.trim();
 
   const normalizedLimit = useMemo(() => {
+    if (includeAllIssues) return undefined;
     const trimmed = issueLimit.trim();
     if (!trimmed) return undefined;
     const parsed = Number.parseInt(trimmed, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
     return Math.max(1, Math.min(100, parsed));
-  }, [issueLimit]);
+  }, [includeAllIssues, issueLimit]);
 
   const sortedSelection = useMemo(() => sortPaths(selectedPaths), [selectedPaths]);
   const effectiveSelection = useMemo(
@@ -475,6 +477,17 @@ export default function HomePage() {
     setSelectedPaths([]);
   }, []);
 
+  const handleIncludeAllToggle = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const nextIncludeAll = event.target.checked;
+      setIncludeAllIssues(nextIncludeAll);
+      if (nextIncludeAll) {
+        setError(null);
+      }
+    },
+    [setError]
+  );
+
   const handleLoadRepository = useCallback(
     async (event?: React.FormEvent<HTMLFormElement>) => {
       event?.preventDefault();
@@ -649,9 +662,14 @@ export default function HomePage() {
   const handleEstimateSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (!includeAllIssues && normalizedLimit === undefined) {
+        setError("Enter a valid number of open issues to analyze.");
+        setNotice(null);
+        return;
+      }
       await runEstimation();
     },
-    [runEstimation]
+    [includeAllIssues, normalizedLimit, runEstimation, setError, setNotice]
   );
 
   const handleRefresh = useCallback(async () => {
@@ -704,9 +722,11 @@ export default function HomePage() {
     return `${preview.join(", ")}${suffix}`;
   }, [sortedSelection]);
 
-  const issueCountDescription = normalizedLimit
+  const issueCountDescription = includeAllIssues
+    ? "All open issues"
+    : normalizedLimit
     ? `${normalizedLimit} issue${normalizedLimit === 1 ? "" : "s"}`
-    : "All open issues";
+    : "Limited open issues";
 
   if (!authChecked) {
     return (
@@ -861,20 +881,42 @@ export default function HomePage() {
         <section className="space-y-4 rounded-lg border border-slate-200 p-6 shadow-sm">
           <h2 className="text-lg font-semibold">3. Estimate issues</h2>
           <form onSubmit={handleEstimateSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700" htmlFor="issueLimit">
-                How many open issues? (default 5)
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input
+                  id="includeAllIssues"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={includeAllIssues}
+                  disabled={isEstimating}
+                  onChange={handleIncludeAllToggle}
+                />
+                <span>Fetch all open issues</span>
               </label>
-              <Input
-                id="issueLimit"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={issueLimit}
-                onChange={(event) => setIssueLimit(event.target.value)}
-              />
-              <p className="text-xs text-slate-500">
-                Issues are pulled newest-first. Increase the number for a broader sweep.
-              </p>
+              {includeAllIssues ? (
+                <p className="text-xs text-slate-500">
+                  Issues are pulled newest-first. Uncheck to limit how many are fetched.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700" htmlFor="issueLimit">
+                    How many open issues?
+                  </label>
+                  <Input
+                    id="issueLimit"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    placeholder="e.g. 10"
+                    value={issueLimit}
+                    disabled={isEstimating}
+                    onChange={(event) => setIssueLimit(event.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">
+                    Issues are pulled newest-first. Increase the number for a broader sweep.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -997,7 +1039,7 @@ export default function HomePage() {
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left">
                 <tr>
-                  <th className="px-3 py-2 font-medium text-slate-500">#</th>
+                  <th className="px-3 py-2 font-medium text-slate-500">Link</th>
                   <th className="px-3 py-2 font-medium text-slate-500">Title</th>
                   <th className="px-3 py-2 font-medium text-slate-500">Complexity</th>
                   <th className="px-3 py-2 font-medium text-slate-500">Estimate</th>
@@ -1014,7 +1056,7 @@ export default function HomePage() {
                         rel="noreferrer"
                         className="hover:underline"
                       >
-                        link{issue.issue_number}
+                        #{issue.issue_number}
                       </a>
                     </td>
                     <td className="px-3 py-2 text-slate-700">{issue.title}</td>
