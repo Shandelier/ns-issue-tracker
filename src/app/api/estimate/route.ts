@@ -9,6 +9,8 @@ import { ProgressOverrides, ProgressStage, setProgressStage } from "@/lib/server
 
 export const runtime = "nodejs";
 
+const DEFAULT_ISSUE_BATCH_SIZE = 5;
+
 type GitHubIssue = {
   number: number;
   title: string;
@@ -58,34 +60,73 @@ function parseGitHubUrl(repoUrl: string) {
   }
 }
 
-async function fetchAllIssues(
+async function fetchIssues(
   owner: string,
   repo: string,
   githubToken?: string,
-  limit?: number
-): Promise<GitHubIssue[]> {
-  const issues: GitHubIssue[] = [];
-  let page = 1;
-  const cappedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  options?: {
+    limit?: number;
+    page?: number;
+  }
+): Promise<{ issues: GitHubIssue[]; hasMore: boolean }> {
+  const rawLimit = options?.limit;
+  const limit =
+    rawLimit && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.max(1, Math.min(100, Math.floor(rawLimit))) : undefined;
+  const rawPage = options?.page;
+  const page =
+    rawPage && Number.isFinite(rawPage) && rawPage > 0 ? Math.max(1, Math.min(1000, Math.floor(rawPage))) : undefined;
 
-  while (true) {
+  if (page) {
+    const effectiveLimit = limit ?? DEFAULT_ISSUE_BATCH_SIZE;
+    const requestPageSize = Math.min(effectiveLimit, 100);
     const { data: batch } = await githubRequestJson<GitHubIssue[]>(
-      `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100&page=${page}`,
+      `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${requestPageSize}&page=${page}`,
       { token: githubToken }
     );
 
-    if (batch.length === 0) break;
+    if (batch.length === 0) {
+      return { issues: [], hasMore: false };
+    }
+
+    const filtered = batch.filter((issue: any) => !issue.pull_request);
+    const trimmed = filtered.slice(0, effectiveLimit);
+    const hasMore = filtered.length === requestPageSize;
+    return { issues: trimmed, hasMore };
+  }
+
+  const issues: GitHubIssue[] = [];
+  let pageIndex = 1;
+
+  while (true) {
+    const remaining = limit ? Math.max(limit - issues.length, 0) : undefined;
+    if (remaining === 0) {
+      return { issues: issues.slice(0, limit), hasMore: true };
+    }
+
+    const perPage = remaining ? Math.min(remaining, 100) : 100;
+    const { data: batch } = await githubRequestJson<GitHubIssue[]>(
+      `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${perPage}&page=${pageIndex}`,
+      { token: githubToken }
+    );
+
+    if (batch.length === 0) {
+      break;
+    }
+
     const filtered = batch.filter((issue: any) => !issue.pull_request);
     issues.push(...filtered);
 
-    if (cappedLimit && issues.length >= cappedLimit) {
-      return issues.slice(0, cappedLimit);
+    if (limit && issues.length >= limit) {
+      return { issues: issues.slice(0, limit), hasMore: filtered.length === perPage };
     }
-    if (batch.length < 100) break;
-    page += 1;
+
+    if (filtered.length < perPage) {
+      break;
+    }
+    pageIndex += 1;
   }
 
-  return issues;
+  return { issues, hasMore: false };
 }
 
 async function fetchIssueComments(
@@ -731,6 +772,11 @@ export async function POST(request: Request) {
       typeof rawIssueLimit === "number" && Number.isFinite(rawIssueLimit)
         ? Math.max(1, Math.min(100, Math.floor(rawIssueLimit)))
         : undefined;
+    const rawIssuePage = body?.issuePage;
+    const issuePage =
+      typeof rawIssuePage === "number" && Number.isFinite(rawIssuePage)
+        ? Math.max(1, Math.min(1000, Math.floor(rawIssuePage)))
+        : undefined;
     const listRepoFiles = Boolean(body?.includeRepoTree);
     const onlyRepoTree = Boolean(body?.onlyRepoTree);
     const rawTreeDepth = body?.treeDepth;
@@ -804,12 +850,16 @@ export async function POST(request: Request) {
     const debugCaptureOverride =
       typeof body?.debugCapture === "boolean" ? body.debugCapture : undefined;
 
-    updateProgress?.("fetching_issues", {
-      message: issueLimit
-        ? `Requesting up to ${issueLimit} open issues from GitHub.`
-        : "Requesting all open issues from GitHub.",
+    const issueFetchMessage = issuePage
+      ? `Requesting page ${issuePage} of up to ${issueLimit ?? DEFAULT_ISSUE_BATCH_SIZE} open issues from GitHub.`
+      : issueLimit
+      ? `Requesting up to ${issueLimit} open issues from GitHub.`
+      : "Requesting all open issues from GitHub.";
+    updateProgress?.("fetching_issues", { message: issueFetchMessage });
+    const { issues, hasMore } = await fetchIssues(parsed.owner, parsed.repo, githubToken, {
+      limit: issueLimit,
+      page: issuePage,
     });
-    const issues = await fetchAllIssues(parsed.owner, parsed.repo, githubToken, issueLimit);
     if (issues.length === 0) {
       updateProgress?.("complete", { message: "No open issues detected in the repository." });
       const emptyResponse: Record<string, unknown> = { estimates: [] };
@@ -825,6 +875,7 @@ export async function POST(request: Request) {
         emptyResponse.branch = resolvedBranch;
         emptyResponse.suggestedPaths = repoTree.length ? suggestDefaultPaths(repoTree) : [];
       }
+      emptyResponse.hasMore = hasMore;
       return NextResponse.json(emptyResponse);
     }
 
@@ -882,6 +933,7 @@ export async function POST(request: Request) {
       repoTree,
       branch: branchField,
       suggestedPaths: repoTree ? suggestDefaultPaths(repoTree) : undefined,
+      hasMore,
       selectedFiles: files.map((file) => ({
         path: file.path,
         language: file.language,
