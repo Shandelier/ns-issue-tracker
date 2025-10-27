@@ -10,6 +10,7 @@ import { ProgressOverrides, ProgressStage, setProgressStage } from "@/lib/server
 export const runtime = "nodejs";
 
 const DEFAULT_ISSUE_BATCH_SIZE = 5;
+const OPENROUTER_CHUNK_SIZES = [5, 3, 1] as const;
 
 type GitHubIssue = {
   number: number;
@@ -686,21 +687,36 @@ type RequestEstimatesOptions = {
   progress?: (stage: ProgressStage, overrides?: ProgressOverrides) => void;
 };
 
-async function requestEstimates(
+type ChunkProgressMeta = {
+  chunkIndex: number;
+  processedCount: number;
+  totalCount: number;
+};
+
+type ChunkEstimatesResult = {
+  estimates: Array<{
+    issue_number: number;
+    complexity: string;
+    estimated_cost: string;
+  }>;
+  debugPath: string | null;
+};
+
+async function requestEstimatesForChunk(
   issueSummaries: IssueSummary[],
   fileContexts: string[],
-  options?: RequestEstimatesOptions
-) {
-  const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of solving the GitHub issues.
-Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
-and estimated_cost (a string like "$250"). Use the details about the issue and repo files selected by the user for precise estimation. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
+  systemPrompt: string,
+  filesSection: string,
+  model: string,
+  options: RequestEstimatesOptions | undefined,
+  meta: ChunkProgressMeta
+): Promise<ChunkEstimatesResult> {
+  if (!issueSummaries.length) {
+    return { estimates: [], debugPath: null };
+  }
 
   const issuesSection = `Here are the issues from a repository. Analyze them collectively and respond with JSON only.
 ${JSON.stringify(issueSummaries)}`;
-
-  const filesSection = fileContexts.length
-    ? `\n\nHere is additional repository context:\n${fileContexts.join("\n\n")}`
-    : "";
 
   const userPrompt = `${issuesSection}${filesSection}
 `;
@@ -709,17 +725,19 @@ ${JSON.stringify(issueSummaries)}`;
     enabledOverride: options?.debugCapture,
   });
 
-  const requestedModel = options?.model?.trim();
-  const envDefault = process.env.OPENROUTER_MODEL?.trim();
-  const model = requestedModel && requestedModel.length > 0
-    ? requestedModel
-    : envDefault && envDefault.length > 0
-      ? envDefault
-      : "x-ai/grok-code-fast-1";
+  const overrides: ProgressOverrides = {
+    message: `Requesting estimates from OpenRouter using ${model} (chunk ${meta.chunkIndex + 1}, size ${issueSummaries.length}).`,
+  };
 
-  options?.progress?.("calling_openrouter", {
-    message: `Requesting estimates from OpenRouter using ${model}.`,
-  });
+  if (meta.totalCount > 0) {
+    const completionRatio = meta.processedCount / meta.totalCount;
+    if (Number.isFinite(completionRatio)) {
+      overrides.value = Math.min(0.8 + completionRatio * 0.1, 0.91);
+    }
+  }
+
+  options?.progress?.("calling_openrouter", overrides);
+
   const { content } = await openRouterChat({
     model,
     temperature: 0.2,
@@ -729,24 +747,176 @@ ${JSON.stringify(issueSummaries)}`;
     ],
   });
 
-  options?.progress?.("parsing_response", {
-    message: "Parsing OpenRouter response.",
-  });
+  let parsed: {
+    estimates?: Array<{
+      issue_number: number;
+      complexity: string;
+      estimated_cost: string;
+    }>;
+  };
   try {
-    const parsed = coerceJsonPayload(content) as {
+    parsed = coerceJsonPayload(content) as {
       estimates?: Array<{
         issue_number: number;
         complexity: string;
         estimated_cost: string;
       }>;
     };
-    return {
-      estimates: parsed.estimates ?? [],
-      debugPath,
-    };
-  } catch (error) {
-    throw new Error("Unable to parse OpenRouter response");
+  } catch {
+    throw new Error(`Unable to parse OpenRouter response for chunk ${meta.chunkIndex + 1}`);
   }
+
+  return {
+    estimates: parsed.estimates ?? [],
+    debugPath,
+  };
+}
+
+async function requestEstimates(
+  issueSummaries: IssueSummary[],
+  fileContexts: string[],
+  options?: RequestEstimatesOptions
+) {
+  if (!issueSummaries.length) {
+    return { estimates: [], debugPath: null };
+  }
+
+  const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of solving the GitHub issues.
+Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
+and estimated_cost (a string like "$250"). Use the details about the issue and repo files selected by the user for precise estimation. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
+
+  const filesSection = fileContexts.length
+    ? `\n\nHere is additional repository context:\n${fileContexts.join("\n\n")}`
+    : "";
+
+  const requestedModel = options?.model?.trim();
+  const envDefault = process.env.OPENROUTER_MODEL?.trim();
+  const model =
+    requestedModel && requestedModel.length > 0
+      ? requestedModel
+      : envDefault && envDefault.length > 0
+        ? envDefault
+        : "x-ai/grok-code-fast-1";
+
+  const issueNumbers = new Set(issueSummaries.map((issue) => issue.number));
+  const aggregate = new Map<number, { issue_number: number; complexity: string; estimated_cost: string }>();
+  const debugPaths: string[] = [];
+
+  const totalCount = issueSummaries.length;
+  let processedCount = 0;
+  let chunkIndex = 0;
+  let preferredSizeIndex = 0;
+
+  while (processedCount < totalCount) {
+    let attemptIndex = preferredSizeIndex;
+    let lastError: unknown;
+    let handled = false;
+
+    while (attemptIndex < OPENROUTER_CHUNK_SIZES.length) {
+      const attemptSize = OPENROUTER_CHUNK_SIZES[attemptIndex];
+      const chunk = issueSummaries.slice(
+        processedCount,
+        Math.min(processedCount + attemptSize, totalCount)
+      );
+
+      if (!chunk.length) {
+        handled = true;
+        processedCount = totalCount;
+        break;
+      }
+
+      try {
+        const { estimates, debugPath } = await requestEstimatesForChunk(
+          chunk,
+          fileContexts,
+          systemPrompt,
+          filesSection,
+          model,
+          options,
+          {
+            chunkIndex,
+            processedCount,
+            totalCount,
+          }
+        );
+
+        for (const estimate of estimates) {
+          if (!estimate) continue;
+          const candidateNumber = Number((estimate as { issue_number: unknown }).issue_number);
+          if (!Number.isFinite(candidateNumber)) continue;
+          const normalizedNumber = Math.trunc(candidateNumber);
+          if (!issueNumbers.has(normalizedNumber)) continue;
+
+          aggregate.set(normalizedNumber, {
+            issue_number: normalizedNumber,
+            complexity: String(estimate.complexity),
+            estimated_cost: String(estimate.estimated_cost),
+          });
+        }
+
+        if (debugPath && debugPaths.length === 0) {
+          debugPaths.push(debugPath);
+        }
+
+        processedCount += chunk.length;
+        chunkIndex += 1;
+        preferredSizeIndex = attemptIndex;
+        handled = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        attemptIndex += 1;
+
+        if (attemptIndex < OPENROUTER_CHUNK_SIZES.length) {
+          const retrySize = OPENROUTER_CHUNK_SIZES[attemptIndex];
+          const rawMessage =
+            error instanceof Error ? error.message : String(error ?? "Unknown error");
+          const message =
+            rawMessage.length > 180 ? `${rawMessage.slice(0, 177)}...` : rawMessage;
+          options?.progress?.("calling_openrouter", {
+            message: `Retrying OpenRouter request with chunk size ${retrySize} (chunk ${chunkIndex + 1}) after error: ${message}`,
+          });
+        }
+      }
+    }
+
+    if (!handled) {
+      if (lastError instanceof Error) {
+        throw lastError;
+      }
+      throw new Error(
+        typeof lastError === "string" ? lastError : "OpenRouter request failed"
+      );
+    }
+  }
+
+  options?.progress?.("parsing_response", {
+    message: `Parsing OpenRouter responses for ${issueSummaries.length} issue${issueSummaries.length === 1 ? "" : "s"}.`,
+  });
+
+  if (aggregate.size !== issueNumbers.size) {
+    const missing = issueSummaries
+      .filter((issue) => !aggregate.has(issue.number))
+      .map((issue) => issue.number);
+    throw new Error(
+      missing.length
+        ? `Missing estimates for issue${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`
+        : "Unable to match estimates to issues"
+    );
+  }
+
+  const orderedEstimates = issueSummaries.map((issue) => {
+    const entry = aggregate.get(issue.number);
+    if (!entry) {
+      throw new Error(`Missing estimate for issue #${issue.number}`);
+    }
+    return entry;
+  });
+
+  return {
+    estimates: orderedEstimates,
+    debugPath: debugPaths[0] ?? null,
+  };
 }
 
 export async function POST(request: Request) {
@@ -908,21 +1078,38 @@ export async function POST(request: Request) {
       progress: updateProgress,
     });
 
-    const enriched = summaries.map((issue) => {
-      const match = estimates.find((estimate) => estimate.issue_number === issue.number);
+    const estimateByNumber = new Map(
+      estimates.map((estimate) => [estimate.issue_number, estimate])
+    );
+    const seenIssues = new Set<number>();
+    const enriched = summaries.reduce<Array<{
+      issue_number: number;
+      title: string;
+      complexity: string;
+      estimated_cost: string;
+      labels: string;
+      url: string;
+    }>>((acc, issue) => {
+      if (seenIssues.has(issue.number)) {
+        return acc;
+      }
+
+      const match = estimateByNumber.get(issue.number);
       if (!match) {
         throw new Error(`Missing estimate for issue #${issue.number}`);
       }
 
-      return {
+      seenIssues.add(issue.number);
+      acc.push({
         issue_number: issue.number,
         title: issue.title,
         complexity: String(match.complexity),
         estimated_cost: String(match.estimated_cost),
         labels: issue.labels.join("; "),
         url: issue.url,
-      };
-    });
+      });
+      return acc;
+    }, []);
 
     const branchField = needBranchInfo || preferredBranch ? resolvedBranch : undefined;
 
