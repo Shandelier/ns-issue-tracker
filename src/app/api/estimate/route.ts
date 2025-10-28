@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 
 const DEFAULT_ISSUE_BATCH_SIZE = 5;
 const OPENROUTER_CHUNK_SIZES = [5, 3, 1] as const;
+const OPENROUTER_CHUNK_TIMEOUT_MS = 35_000;
 
 type GitHubIssue = {
   number: number;
@@ -738,14 +739,31 @@ ${JSON.stringify(issueSummaries)}`;
 
   options?.progress?.("calling_openrouter", overrides);
 
-  const { content } = await openRouterChat({
-    model,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-  });
+  const startedAt = Date.now();
+  let content: string;
+  try {
+    ({ content } = await openRouterChat({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      timeoutMs: OPENROUTER_CHUNK_TIMEOUT_MS,
+    }));
+  } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
+    const rawMessage = error instanceof Error ? error.message : String(error ?? "Unknown error");
+    console.warn(
+      `[estimate] OpenRouter chunk ${meta.chunkIndex + 1} (size ${issueSummaries.length}) failed after ${elapsedMs}ms: ${rawMessage}`
+    );
+    throw error;
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  console.info(
+    `[estimate] OpenRouter chunk ${meta.chunkIndex + 1} (size ${issueSummaries.length}) completed in ${elapsedMs}ms`
+  );
 
   let parsed: {
     estimates?: Array<{
