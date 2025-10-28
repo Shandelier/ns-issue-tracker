@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 
 const DEFAULT_ISSUE_BATCH_SIZE = 5;
 const OPENROUTER_CHUNK_SIZES = [5, 3, 1] as const;
+const OPENROUTER_CHUNK_TIMEOUT_MS = 35_000;
 
 type GitHubIssue = {
   number: number;
@@ -738,14 +739,31 @@ ${JSON.stringify(issueSummaries)}`;
 
   options?.progress?.("calling_openrouter", overrides);
 
-  const { content } = await openRouterChat({
-    model,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-  });
+  const startedAt = Date.now();
+  let content: string;
+  try {
+    ({ content } = await openRouterChat({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      timeoutMs: OPENROUTER_CHUNK_TIMEOUT_MS,
+    }));
+  } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
+    const rawMessage = error instanceof Error ? error.message : String(error ?? "Unknown error");
+    console.warn(
+      `[estimate] OpenRouter chunk ${meta.chunkIndex + 1} (size ${issueSummaries.length}) failed after ${elapsedMs}ms: ${rawMessage}`
+    );
+    throw error;
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  console.info(
+    `[estimate] OpenRouter chunk ${meta.chunkIndex + 1} (size ${issueSummaries.length}) completed in ${elapsedMs}ms`
+  );
 
   let parsed: {
     estimates?: Array<{
@@ -840,6 +858,11 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           }
         );
 
+        const chunkEstimates = new Map<
+          number,
+          { issue_number: number; complexity: string; estimated_cost: string }
+        >();
+
         for (const estimate of estimates) {
           if (!estimate) continue;
           const candidateNumber = Number((estimate as { issue_number: unknown }).issue_number);
@@ -847,16 +870,32 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           const normalizedNumber = Math.trunc(candidateNumber);
           if (!issueNumbers.has(normalizedNumber)) continue;
 
-          aggregate.set(normalizedNumber, {
+          chunkEstimates.set(normalizedNumber, {
             issue_number: normalizedNumber,
             complexity: String(estimate.complexity),
             estimated_cost: String(estimate.estimated_cost),
           });
         }
 
+        const missingInChunk = chunk
+          .map((issue) => issue.number)
+          .filter((issueNumber) => !chunkEstimates.has(issueNumber));
+
+        if (missingInChunk.length) {
+          throw new Error(
+            `OpenRouter response missing estimate${missingInChunk.length === 1 ? "" : "s"} for chunk ${
+              chunkIndex + 1
+            }: ${missingInChunk.join(", ")}`
+          );
+        }
+
         if (debugPath && debugPaths.length === 0) {
           debugPaths.push(debugPath);
         }
+
+        chunkEstimates.forEach((estimate) => {
+          aggregate.set(estimate.issue_number, estimate);
+        });
 
         processedCount += chunk.length;
         chunkIndex += 1;
