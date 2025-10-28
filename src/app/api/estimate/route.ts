@@ -858,6 +858,11 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           }
         );
 
+        const chunkEstimates = new Map<
+          number,
+          { issue_number: number; complexity: string; estimated_cost: string }
+        >();
+
         for (const estimate of estimates) {
           if (!estimate) continue;
           const candidateNumber = Number((estimate as { issue_number: unknown }).issue_number);
@@ -865,15 +870,31 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           const normalizedNumber = Math.trunc(candidateNumber);
           if (!issueNumbers.has(normalizedNumber)) continue;
 
-          aggregate.set(normalizedNumber, {
+          chunkEstimates.set(normalizedNumber, {
             issue_number: normalizedNumber,
             complexity: String(estimate.complexity),
             estimated_cost: String(estimate.estimated_cost),
           });
         }
 
+        const missingInChunk = chunk
+          .map((issue) => issue.number)
+          .filter((issueNumber) => !chunkEstimates.has(issueNumber));
+
+        if (missingInChunk.length) {
+          throw new Error(
+            `OpenRouter response missing estimate${missingInChunk.length === 1 ? "" : "s"} for chunk ${
+              chunkIndex + 1
+            }: ${missingInChunk.join(", ")}`
+          );
+        }
+
         if (debugPath && debugPaths.length === 0) {
           debugPaths.push(debugPath);
+        }
+
+        for (const estimate of chunkEstimates.values()) {
+          aggregate.set(estimate.issue_number, estimate);
         }
 
         processedCount += chunk.length;
