@@ -893,9 +893,9 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           debugPaths.push(debugPath);
         }
 
-        for (const estimate of chunkEstimates.values()) {
+        chunkEstimates.forEach((estimate) => {
           aggregate.set(estimate.issue_number, estimate);
-        }
+        });
 
         processedCount += chunk.length;
         chunkIndex += 1;
