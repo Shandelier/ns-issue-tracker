@@ -810,9 +810,9 @@ async function requestEstimates(
     return { estimates: [], debugPath: null };
   }
 
-  const systemPrompt = `You are a budgeting assistant. Estimate the complexity and dollar cost of solving the GitHub issues.
+  const systemPrompt = `You are a budgeting assistant. Estimate the complexity and US Dollar cost of solving the GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
-and estimated_cost (a string like "$250"). Use the details about the issue and repo files selected by the user for precise estimation. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
+and estimated_cost (a string like "$250" in range of $100-$10000). Use the details about the issue and repo files selected by the user for precise estimation. Take into account complexity of the project and the issue. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
 
   const filesSection = fileContexts.length
     ? `\n\nHere is additional repository context:\n${fileContexts.join("\n\n")}`
