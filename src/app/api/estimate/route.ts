@@ -132,6 +132,8 @@ async function fetchIssues(
   return { issues, hasMore: false };
 }
 
+const ISSUE_COMMENT_FETCH_LIMIT = 5;
+
 async function fetchIssueComments(
   issue: GitHubIssue,
   githubToken?: string
@@ -141,14 +143,14 @@ async function fetchIssueComments(
   }
 
   const { data: comments } = await githubRequestJson<GitHubComment[]>(
-    `${issue.comments_url}?per_page=20`,
+    `${issue.comments_url}?per_page=${ISSUE_COMMENT_FETCH_LIMIT}`,
     { token: githubToken }
   );
 
   return comments
     .map((comment) => comment.body?.trim())
     .filter((body): body is string => Boolean(body))
-    .slice(0, 5);
+    .slice(0, ISSUE_COMMENT_FETCH_LIMIT);
 }
 
 async function fetchRepoInfo(owner: string, repo: string, githubToken?: string) {
@@ -554,6 +556,9 @@ type IssueSummary = {
   url: string;
 };
 
+const ISSUE_BODY_CHAR_LIMIT = 6000;
+const ISSUE_COMMENT_CHAR_LIMIT = 1000;
+
 async function buildIssuesPayload(
   issues: GitHubIssue[],
   githubToken?: string
@@ -564,12 +569,16 @@ async function buildIssuesPayload(
         typeof label === "string" ? label : label.name ?? ""
       );
       const comments = await fetchIssueComments(issue, githubToken);
+      const bodyPayload = truncateContent(issue.body ?? "", ISSUE_BODY_CHAR_LIMIT);
+      const processedComments = comments.map(
+        (comment) => truncateContent(comment, ISSUE_COMMENT_CHAR_LIMIT).text
+      );
       return {
         number: issue.number,
         title: issue.title,
-        body: issue.body ?? "",
+        body: bodyPayload.text,
         labels: labels.filter(Boolean),
-        comments,
+        comments: processedComments,
         url: issue.html_url,
       };
     })
