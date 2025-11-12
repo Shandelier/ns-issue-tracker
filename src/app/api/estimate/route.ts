@@ -80,7 +80,7 @@ async function fetchIssues(
 
   if (page) {
     const effectiveLimit = limit ?? DEFAULT_ISSUE_BATCH_SIZE;
-    const requestPageSize = Math.min(effectiveLimit + 1, 100);
+    const requestPageSize = Math.max(1, Math.min(effectiveLimit, 100));
     const { data: batch } = await githubRequestJson<GitHubIssue[]>(
       `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${requestPageSize}&page=${page}`,
       { token: githubToken }
@@ -92,7 +92,7 @@ async function fetchIssues(
 
     const filtered = batch.filter((issue: any) => !issue.pull_request);
     const trimmed = filtered.slice(0, effectiveLimit);
-    const hasMore = filtered.length > trimmed.length || batch.length === requestPageSize;
+    const hasMore = batch.length === requestPageSize;
     return { issues: trimmed, hasMore };
   }
 
@@ -745,6 +745,8 @@ ${JSON.stringify(issueSummaries)}`;
       overrides.value = Math.min(0.8 + completionRatio * 0.1, 0.91);
     }
   }
+  overrides.processedCount = meta.processedCount;
+  overrides.totalCount = meta.totalCount;
 
   options?.progress?.("calling_openrouter", overrides);
 
@@ -906,7 +908,19 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           aggregate.set(estimate.issue_number, estimate);
         });
 
-        processedCount += chunk.length;
+        const updatedProcessedCount = processedCount + chunk.length;
+        options?.progress?.("calling_openrouter", {
+          message: `Received estimates for ${Math.min(updatedProcessedCount, totalCount)} of ${totalCount} issue${
+            totalCount === 1 ? "" : "s"
+          }.`,
+          processedCount: updatedProcessedCount,
+          totalCount,
+          value: totalCount
+            ? Math.min(0.8 + (updatedProcessedCount / totalCount) * 0.1, 0.91)
+            : undefined,
+        });
+
+        processedCount = updatedProcessedCount;
         chunkIndex += 1;
         preferredSizeIndex = attemptIndex;
         handled = true;
@@ -940,6 +954,8 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
 
   options?.progress?.("parsing_response", {
     message: `Parsing OpenRouter responses for ${issueSummaries.length} issue${issueSummaries.length === 1 ? "" : "s"}.`,
+    processedCount: issueSummaries.length,
+    totalCount: issueSummaries.length,
   });
 
   if (aggregate.size !== issueNumbers.size) {
