@@ -100,6 +100,9 @@ function clampValue(value: number) {
 }
 
 function sanitizeCount(value: number | undefined): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
   if (!Number.isFinite(value)) {
     return undefined;
   }
