@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Issue Estimator",
-  description: "Generate cost estimates for GitHub issues with GPT-5",
+  description: "Generate cost estimates for GitHub issues with Open Router",
 };
 
 export default function RootLayout({

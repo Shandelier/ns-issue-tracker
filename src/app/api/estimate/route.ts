@@ -80,7 +80,7 @@ async function fetchIssues(
 
   if (page) {
     const effectiveLimit = limit ?? DEFAULT_ISSUE_BATCH_SIZE;
-    const requestPageSize = Math.min(effectiveLimit + 1, 100);
+    const requestPageSize = Math.max(1, Math.min(effectiveLimit, 100));
     const { data: batch } = await githubRequestJson<GitHubIssue[]>(
       `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${requestPageSize}&page=${page}`,
       { token: githubToken }
@@ -92,7 +92,7 @@ async function fetchIssues(
 
     const filtered = batch.filter((issue: any) => !issue.pull_request);
     const trimmed = filtered.slice(0, effectiveLimit);
-    const hasMore = filtered.length > trimmed.length || batch.length === requestPageSize;
+    const hasMore = batch.length === requestPageSize;
     return { issues: trimmed, hasMore };
   }
 
@@ -132,6 +132,8 @@ async function fetchIssues(
   return { issues, hasMore: false };
 }
 
+const ISSUE_COMMENT_FETCH_LIMIT = 5;
+
 async function fetchIssueComments(
   issue: GitHubIssue,
   githubToken?: string
@@ -141,14 +143,14 @@ async function fetchIssueComments(
   }
 
   const { data: comments } = await githubRequestJson<GitHubComment[]>(
-    `${issue.comments_url}?per_page=20`,
+    `${issue.comments_url}?per_page=${ISSUE_COMMENT_FETCH_LIMIT}`,
     { token: githubToken }
   );
 
   return comments
     .map((comment) => comment.body?.trim())
     .filter((body): body is string => Boolean(body))
-    .slice(0, 5);
+    .slice(0, ISSUE_COMMENT_FETCH_LIMIT);
 }
 
 async function fetchRepoInfo(owner: string, repo: string, githubToken?: string) {
@@ -554,6 +556,9 @@ type IssueSummary = {
   url: string;
 };
 
+const ISSUE_BODY_CHAR_LIMIT = 6000;
+const ISSUE_COMMENT_CHAR_LIMIT = 1000;
+
 async function buildIssuesPayload(
   issues: GitHubIssue[],
   githubToken?: string
@@ -564,12 +569,16 @@ async function buildIssuesPayload(
         typeof label === "string" ? label : label.name ?? ""
       );
       const comments = await fetchIssueComments(issue, githubToken);
+      const bodyPayload = truncateContent(issue.body ?? "", ISSUE_BODY_CHAR_LIMIT);
+      const processedComments = comments.map(
+        (comment) => truncateContent(comment, ISSUE_COMMENT_CHAR_LIMIT).text
+      );
       return {
         number: issue.number,
         title: issue.title,
-        body: issue.body ?? "",
+        body: bodyPayload.text,
         labels: labels.filter(Boolean),
-        comments,
+        comments: processedComments,
         url: issue.html_url,
       };
     })
@@ -736,6 +745,8 @@ ${JSON.stringify(issueSummaries)}`;
       overrides.value = Math.min(0.8 + completionRatio * 0.1, 0.91);
     }
   }
+  overrides.processedCount = meta.processedCount;
+  overrides.totalCount = meta.totalCount;
 
   options?.progress?.("calling_openrouter", overrides);
 
@@ -897,7 +908,19 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
           aggregate.set(estimate.issue_number, estimate);
         });
 
-        processedCount += chunk.length;
+        const updatedProcessedCount = processedCount + chunk.length;
+        options?.progress?.("calling_openrouter", {
+          message: `Received estimates for ${Math.min(updatedProcessedCount, totalCount)} of ${totalCount} issue${
+            totalCount === 1 ? "" : "s"
+          }.`,
+          processedCount: updatedProcessedCount,
+          totalCount,
+          value: totalCount
+            ? Math.min(0.8 + (updatedProcessedCount / totalCount) * 0.1, 0.91)
+            : undefined,
+        });
+
+        processedCount = updatedProcessedCount;
         chunkIndex += 1;
         preferredSizeIndex = attemptIndex;
         handled = true;
@@ -931,6 +954,8 @@ and estimated_cost (a string like "$250"). Use the details about the issue and r
 
   options?.progress?.("parsing_response", {
     message: `Parsing OpenRouter responses for ${issueSummaries.length} issue${issueSummaries.length === 1 ? "" : "s"}.`,
+    processedCount: issueSummaries.length,
+    totalCount: issueSummaries.length,
   });
 
   if (aggregate.size !== issueNumbers.size) {

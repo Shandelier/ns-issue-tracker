@@ -21,6 +21,8 @@ export type ProgressOverrides = {
   message?: string;
   value?: number;
   error?: string;
+  processedCount?: number;
+  totalCount?: number;
 };
 
 export type ProgressSnapshot = {
@@ -33,6 +35,8 @@ export type ProgressSnapshot = {
   startedAt: number;
   updatedAt: number;
   error?: string;
+  processedCount?: number;
+  totalCount?: number;
 };
 
 const STAGE_META: Record<ProgressStage, StageDefaults> = {
@@ -95,6 +99,14 @@ function clampValue(value: number) {
   return value;
 }
 
+function sanitizeCount(value: number | undefined): number | undefined {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.max(0, Math.trunc(value));
+  return normalized;
+}
+
 function scheduleCleanup(id: string, stage: ProgressStage) {
   const existing = cleanupTimers.get(id);
   if (existing) {
@@ -129,6 +141,12 @@ export function setProgressStage(
 
   const message = overrides.message ?? (stage === "error" ? overrides.error : undefined);
   const error = stage === "error" ? (overrides.error ?? overrides.message ?? previous?.error) : undefined;
+  const processedCount = sanitizeCount(
+    overrides.processedCount ?? previous?.processedCount
+  );
+  const totalCount = sanitizeCount(
+    overrides.totalCount ?? previous?.totalCount
+  );
 
   const snapshot: ProgressSnapshot = {
     id,
@@ -140,6 +158,8 @@ export function setProgressStage(
     startedAt,
     updatedAt: now,
     ...(error ? { error } : {}),
+    ...(typeof processedCount === "number" ? { processedCount } : {}),
+    ...(typeof totalCount === "number" ? { totalCount } : {}),
   };
 
   progressStore.set(id, snapshot);

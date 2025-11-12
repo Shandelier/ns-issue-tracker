@@ -63,6 +63,8 @@ type RemoteProgressSnapshot = {
   startedAt: number;
   updatedAt: number;
   error?: string | null;
+  processedCount?: number;
+  totalCount?: number;
 };
 
 const STORAGE_KEY = "issue-estimator-cache-v2";
@@ -294,6 +296,21 @@ export default function HomePage() {
     return "";
   }, [loadingAction, progressSnapshot]);
 
+  const progressIssueStatus = useMemo(() => {
+    if (loadingAction !== "estimate" || !progressSnapshot) {
+      return "";
+    }
+    const processed = progressSnapshot.processedCount;
+    const total = progressSnapshot.totalCount;
+    if (typeof processed === "number" && typeof total === "number" && total > 0) {
+      return `${processed} / ${total} issues analyzed`;
+    }
+    if (typeof processed === "number") {
+      return `${processed} issues analyzed`;
+    }
+    return "";
+  }, [loadingAction, progressSnapshot]);
+
   const progressMessage = useMemo(() => {
     if (loadingAction === "estimate") {
       return progressSnapshot?.message ?? "";
@@ -310,6 +327,9 @@ export default function HomePage() {
         ) : null}
       </div>
       <Progress value={progressValue} />
+      {progressIssueStatus ? (
+        <p className="text-xs font-medium text-slate-600">{progressIssueStatus}</p>
+      ) : null}
       {progressHint ? <p className="text-xs text-slate-500">{progressHint}</p> : null}
       {progressMessage && progressMessage !== progressHint ? (
         <p className="text-xs text-slate-500">{progressMessage}</p>
