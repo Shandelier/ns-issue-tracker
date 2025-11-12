@@ -216,6 +216,7 @@ export default function HomePage() {
   const [progressSnapshot, setProgressSnapshot] = useState<RemoteProgressSnapshot | null>(null);
   const [activeProgressId, setActiveProgressId] = useState<string | null>(null);
   const progressPollRef = useRef<number | null>(null);
+  const [pendingCsvDownload, setPendingCsvDownload] = useState(0);
 
   const trimmedRepo = repoUrl.trim();
 
@@ -286,54 +287,50 @@ export default function HomePage() {
     return "";
   }, [loadingAction, progressSnapshot]);
 
-  const progressHint = useMemo(() => {
-    if (loadingAction === "estimate") {
-      return progressSnapshot?.hint ?? "Fetching GitHub data and waiting for the LLM response. Large batches may take a bit.";
-    }
-    if (loadingAction === "load-repo") {
-      return "Collecting repository metadata and suggested context files.";
-    }
+const progressIssueStatus = useMemo(() => {
+  if (loadingAction !== "estimate") {
     return "";
-  }, [loadingAction, progressSnapshot]);
+  }
+  const processed = progressSnapshot?.processedCount ?? 0;
+  const total = progressSnapshot?.totalCount;
+  if (typeof total === "number" && total > 0) {
+    const clampedProcessed = Math.min(processed, total);
+    return `${clampedProcessed} / ${total} issues analyzed`;
+  }
+  return `${processed} issues analyzed`;
+}, [loadingAction, progressSnapshot]);
 
-  const progressIssueStatus = useMemo(() => {
-    if (loadingAction !== "estimate" || !progressSnapshot) {
-      return "";
-    }
-    const processed = progressSnapshot.processedCount;
-    const total = progressSnapshot.totalCount;
-    if (typeof processed === "number" && typeof total === "number" && total > 0) {
-      return `${processed} / ${total} issues analyzed`;
-    }
-    if (typeof processed === "number") {
-      return `${processed} issues analyzed`;
-    }
-    return "";
-  }, [loadingAction, progressSnapshot]);
-
-  const progressMessage = useMemo(() => {
-    if (loadingAction === "estimate") {
-      return progressSnapshot?.message ?? "";
-    }
-    return "";
-  }, [loadingAction, progressSnapshot]);
+const progressMessage = useMemo(() => {
+  if (loadingAction === "estimate") {
+    return progressSnapshot?.message ?? "";
+  }
+  if (loadingAction === "load-repo") {
+    return "Collecting repository metadata and suggested context files.";
+  }
+  return "";
+}, [loadingAction, progressSnapshot]);
 
   const progressCard = loadingAction ? (
     <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <span className="text-sm font-semibold text-slate-700">{progressLabel}</span>
-        {progressElapsedLabel ? (
-          <span className="text-xs text-slate-500">{progressElapsedLabel}</span>
-        ) : null}
+        <div className="text-right text-xs text-slate-500">
+          {loadingAction === "estimate" ? (
+            <>
+              <span className="block font-semibold text-slate-600">
+                {progressIssueStatus || "0 issues analyzed"}
+              </span>
+              {progressElapsedLabel ? (
+                <span className="block">{progressElapsedLabel}</span>
+              ) : null}
+            </>
+          ) : progressElapsedLabel ? (
+            <span className="block">{progressElapsedLabel}</span>
+          ) : null}
+        </div>
       </div>
       <Progress value={progressValue} />
-      {progressIssueStatus ? (
-        <p className="text-xs font-medium text-slate-600">{progressIssueStatus}</p>
-      ) : null}
-      {progressHint ? <p className="text-xs text-slate-500">{progressHint}</p> : null}
-      {progressMessage && progressMessage !== progressHint ? (
-        <p className="text-xs text-slate-500">{progressMessage}</p>
-      ) : null}
+      {progressMessage ? <p className="text-xs text-slate-500">{progressMessage}</p> : null}
     </section>
   ) : null;
 
@@ -353,6 +350,23 @@ export default function HomePage() {
     const csv = [header, ...rows].join("\n");
     return URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   }, [estimates, hasData]);
+
+  useEffect(() => {
+    if (!pendingCsvDownload || !hasData || !csvHref) {
+      return;
+    }
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = csvHref;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    link.download = `issue-estimates-${timestamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setPendingCsvDownload(0);
+  }, [pendingCsvDownload, hasData, csvHref]);
 
   useEffect(() => {
     let active = true;
@@ -724,7 +738,7 @@ export default function HomePage() {
         setSelectedFilesMeta([]);
         setNotice(
           nextSuggested.length
-            ? `Repository loaded. Preselected ${nextSuggested.length} context files.`
+            ? `Repository loaded.`
             : "Repository loaded. Select context files to include."
         );
       } catch (err) {
@@ -757,6 +771,7 @@ export default function HomePage() {
         setDebugCapturePath(null);
         setActiveProgressId(null);
         setProgressSnapshot(null);
+        setPendingCsvDownload(0);
         return;
       }
 
@@ -902,6 +917,11 @@ export default function HomePage() {
         setNotice(
           `Estimates updated${selectionTrimmed ? " (first 25 selections applied)" : ""}.`
         );
+        if (aggregatedEstimates.length > 0) {
+          setPendingCsvDownload((token) => token + 1);
+        } else {
+          setPendingCsvDownload(0);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unexpected error while estimating issues");
       } finally {
