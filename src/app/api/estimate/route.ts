@@ -323,6 +323,65 @@ function truncateContent(content: string, limit = 60000) {
   };
 }
 
+function applyFileContextBudget(files: FileContext[], budget: number) {
+  if (!files.length) {
+    return files;
+  }
+
+  const safeBudget = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 0;
+  if (safeBudget <= 0) {
+    return files.map((file) => ({
+      ...file,
+      content: "",
+      truncated: file.content.length > 0 ? true : file.truncated,
+    }));
+  }
+
+  const lengths = files.map((file) => file.content.length);
+  const totalLength = lengths.reduce((acc, len) => acc + len, 0);
+  if (totalLength <= safeBudget) {
+    return files;
+  }
+
+  const maxLength = Math.max(...lengths);
+  let low = 0;
+  let high = maxLength;
+  let bestLimit = 0;
+
+  const cappedTotal = (limit: number) =>
+    lengths.reduce((sum, len) => sum + Math.min(len, limit), 0);
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (cappedTotal(mid) <= safeBudget) {
+      bestLimit = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  if (bestLimit <= 0) {
+    return files.map((file) => ({
+      ...file,
+      content: "",
+      truncated: file.content.length > 0 ? true : file.truncated,
+    }));
+  }
+
+  return files.map((file) => {
+    if (file.content.length <= bestLimit) {
+      return file;
+    }
+    const { text } = truncateContent(file.content, bestLimit);
+    return {
+      ...file,
+      content: text,
+      truncated: true,
+    };
+  });
+}
+
 type FileContext = {
   path: string;
   language: string;
@@ -389,6 +448,7 @@ ${footer}`;
 }
 
 const MAX_SELECTED_FILES = 25;
+const FILE_CONTEXT_TOTAL_BUDGET = 30_000;
 
 type SuggestedPathCandidate = {
   path: string;
@@ -541,9 +601,11 @@ async function buildFileContexts(
     )
   ).filter((file): file is FileContext => Boolean(file));
 
+  const budgetedFiles = applyFileContextBudget(files, FILE_CONTEXT_TOTAL_BUDGET);
+
   return {
-    contexts: files.map(formatFileContext),
-    files,
+    contexts: budgetedFiles.map(formatFileContext),
+    files: budgetedFiles,
   };
 }
 
