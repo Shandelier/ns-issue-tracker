@@ -798,7 +798,7 @@ ${JSON.stringify(issueSummaries)}`;
   });
 
   const overrides: ProgressOverrides = {
-    message: `Requesting estimates from OpenRouter using ${model} (chunk ${meta.chunkIndex + 1}, size ${issueSummaries.length}).`,
+    message: `Calling OpenRouter (chunk ${meta.chunkIndex + 1}, size ${issueSummaries.length}).`,
   };
 
   if (meta.totalCount > 0) {

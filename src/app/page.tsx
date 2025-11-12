@@ -3,7 +3,6 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import { loadSettingsFromStorage } from "@/lib/settings";
 
 interface IssueEstimate {
@@ -216,6 +215,10 @@ export default function HomePage() {
   const [progressSnapshot, setProgressSnapshot] = useState<RemoteProgressSnapshot | null>(null);
   const [activeProgressId, setActiveProgressId] = useState<string | null>(null);
   const progressPollRef = useRef<number | null>(null);
+  const [issueProgressCounter, setIssueProgressCounter] = useState<{
+    processed: number;
+    total?: number;
+  } | null>(null);
   const [pendingCsvDownload, setPendingCsvDownload] = useState(0);
 
   const trimmedRepo = repoUrl.trim();
@@ -252,18 +255,6 @@ export default function HomePage() {
   const isLoadingRepo = loadingAction === "load-repo";
   const isEstimating = loadingAction === "estimate";
 
-  const progressValue = useMemo(() => {
-    if (!loadingAction) return 0;
-    if (loadingAction === "estimate" && progressSnapshot) {
-      const percent = Math.round(progressSnapshot.value * 100);
-      return Math.min(Math.max(percent, 5), 100);
-    }
-    const target = loadingAction === "estimate" ? 45_000 : 12_000;
-    const computed = (progressElapsedMs / target) * 100;
-    const capped = Math.min(computed, 95);
-    return Math.max(8, capped);
-  }, [loadingAction, progressElapsedMs, progressSnapshot]);
-
   const progressElapsedLabel = useMemo(() => {
     if (!loadingAction) return "";
     if (progressElapsedMs < 900) {
@@ -287,28 +278,34 @@ export default function HomePage() {
     return "";
   }, [loadingAction, progressSnapshot]);
 
-const progressIssueStatus = useMemo(() => {
-  if (loadingAction !== "estimate") {
-    return "";
-  }
-  const processed = progressSnapshot?.processedCount ?? 0;
-  const total = progressSnapshot?.totalCount;
-  if (typeof total === "number" && total > 0) {
-    const clampedProcessed = Math.min(processed, total);
-    return `${clampedProcessed} / ${total} issues analyzed`;
-  }
-  return `${processed} issues analyzed`;
-}, [loadingAction, progressSnapshot]);
+  useEffect(() => {
+    if (loadingAction !== "estimate") {
+      setIssueProgressCounter(null);
+    }
+  }, [loadingAction]);
 
-const progressMessage = useMemo(() => {
-  if (loadingAction === "estimate") {
-    return progressSnapshot?.message ?? "";
-  }
-  if (loadingAction === "load-repo") {
-    return "Collecting repository metadata and suggested context files.";
-  }
-  return "";
-}, [loadingAction, progressSnapshot]);
+  const progressIssueStatus = useMemo(() => {
+    if (loadingAction !== "estimate") {
+      return "";
+    }
+    const processed = issueProgressCounter?.processed ?? 0;
+    const total = issueProgressCounter?.total;
+    if (typeof total === "number" && total > 0) {
+      const clampedProcessed = Math.min(processed, total);
+      return `${clampedProcessed} / ${total} issues analyzed`;
+    }
+    return `${processed} issues analyzed`;
+  }, [loadingAction, issueProgressCounter]);
+
+  const progressMessage = useMemo(() => {
+    if (loadingAction === "estimate") {
+      return progressSnapshot?.message ?? "";
+    }
+    if (loadingAction === "load-repo") {
+      return "Collecting repository metadata and suggested context files.";
+    }
+    return "";
+  }, [loadingAction, progressSnapshot]);
 
   const progressCard = loadingAction ? (
     <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
@@ -329,7 +326,6 @@ const progressMessage = useMemo(() => {
           ) : null}
         </div>
       </div>
-      <Progress value={progressValue} />
       {progressMessage ? <p className="text-xs text-slate-500">{progressMessage}</p> : null}
     </section>
   ) : null;
@@ -772,6 +768,7 @@ const progressMessage = useMemo(() => {
         setActiveProgressId(null);
         setProgressSnapshot(null);
         setPendingCsvDownload(0);
+        setIssueProgressCounter(null);
         return;
       }
 
@@ -783,6 +780,7 @@ const progressMessage = useMemo(() => {
       }
       setProgressSnapshot(null);
 
+      setIssueProgressCounter({ processed: 0, total: normalizedLimit ?? undefined });
       setLoadingAction("estimate");
       setError(null);
       setNotice(null);
@@ -803,7 +801,8 @@ const progressMessage = useMemo(() => {
           baseRequestBody.progressId = requestProgressId;
         }
 
-        const aggregatedEstimates: IssueEstimate[] = [];
+        const aggregatedEstimateMap = new Map<number, IssueEstimate>();
+        const orderedIssueNumbers: number[] = [];
         let aggregatedSelectedFiles: SelectedFileMeta[] | undefined;
         let aggregatedRepoTree: RepoTreeNode[] | undefined;
         let aggregatedSuggestedPaths: string[] | undefined;
@@ -843,7 +842,19 @@ const progressMessage = useMemo(() => {
 
           const payload = (await response.json()) as EstimateResponse;
           const batchEstimates = payload.estimates ?? [];
-          aggregatedEstimates.push(...batchEstimates);
+          for (const estimate of batchEstimates) {
+            if (!estimate) continue;
+            const issueNumber = Number(estimate.issue_number);
+            if (!Number.isFinite(issueNumber)) continue;
+            const normalizedNumber = Math.trunc(issueNumber);
+            if (!aggregatedEstimateMap.has(normalizedNumber)) {
+              orderedIssueNumbers.push(normalizedNumber);
+            }
+            aggregatedEstimateMap.set(normalizedNumber, {
+              ...estimate,
+              issue_number: normalizedNumber,
+            });
+          }
 
           if (Array.isArray(payload.selectedFiles) && payload.selectedFiles.length) {
             aggregatedSelectedFiles = payload.selectedFiles;
@@ -866,6 +877,11 @@ const progressMessage = useMemo(() => {
             latestDebugPath = payload.debugCapturePath;
           }
 
+          setIssueProgressCounter((prev) => ({
+            processed: aggregatedEstimateMap.size,
+            total: typeof normalizedLimit === "number" ? normalizedLimit : prev?.total,
+          }));
+
           const hasMoreFlag = payload.hasMore ?? (batchEstimates.length >= batchSize);
 
           if (limitedRun) {
@@ -883,6 +899,10 @@ const progressMessage = useMemo(() => {
 
           currentPage += 1;
         }
+
+        const aggregatedEstimates = orderedIssueNumbers
+          .map((issueNumber) => aggregatedEstimateMap.get(issueNumber))
+          .filter((estimate): estimate is IssueEstimate => Boolean(estimate));
 
         setEstimates(aggregatedEstimates);
         setSelectedFilesMeta(aggregatedSelectedFiles ?? []);
