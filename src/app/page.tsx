@@ -72,6 +72,16 @@ const ISSUE_BATCH_SIZE = 5;
 const MAX_SELECTED_FILES = 25;
 const DEBUG_CAPTURE_STORAGE_KEY = "issue-estimator-debug-capture";
 
+const rawProgressPollInterval = Number.parseInt(
+  process.env.NEXT_PUBLIC_PROGRESS_POLL_INTERVAL_MS ?? "",
+  10
+);
+const DEFAULT_PROGRESS_POLL_INTERVAL_MS = process.env.NODE_ENV === "development" ? 0 : 1000;
+const PROGRESS_POLL_INTERVAL_MS = Number.isFinite(rawProgressPollInterval)
+  ? Math.max(0, rawProgressPollInterval)
+  : DEFAULT_PROGRESS_POLL_INTERVAL_MS;
+const PROGRESS_POLLING_ENABLED = PROGRESS_POLL_INTERVAL_MS > 0;
+
 const sortPaths = (paths: string[]) => [...paths].sort((a, b) => a.localeCompare(b));
 
 function treeHasSelection(node: RepoTreeNode, selectedSet: Set<string>): boolean {
@@ -537,7 +547,7 @@ export default function HomePage() {
   }, [loadingAction]);
 
   useEffect(() => {
-    if (!activeProgressId || typeof window === "undefined") {
+    if (!PROGRESS_POLLING_ENABLED || !activeProgressId || typeof window === "undefined") {
       if (progressPollRef.current !== null) {
         window.clearInterval(progressPollRef.current);
         progressPollRef.current = null;
@@ -579,7 +589,7 @@ export default function HomePage() {
     };
 
     fetchProgress();
-    progressPollRef.current = window.setInterval(fetchProgress, 1000);
+    progressPollRef.current = window.setInterval(fetchProgress, PROGRESS_POLL_INTERVAL_MS);
 
     return () => {
       disposed = true;
