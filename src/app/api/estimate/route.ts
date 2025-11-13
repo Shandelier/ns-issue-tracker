@@ -81,11 +81,11 @@ function createFileContextCacheKey(owner: string, repo: string, branch: string, 
 }
 
 function purgeExpiredFileContexts(now = Date.now()) {
-  for (const [key, entry] of fileContextCache.entries()) {
+  fileContextCache.forEach((entry, key) => {
     if (entry.expiresAt <= now) {
       fileContextCache.delete(key);
     }
-  }
+  });
 }
 
 function getCachedFileContexts(cacheKey: string, selectionKey: string) {
