@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 const DEFAULT_ISSUE_BATCH_SIZE = 5;
 const OPENROUTER_CHUNK_SIZES = [5, 3, 1] as const;
 const OPENROUTER_CHUNK_TIMEOUT_MS = 35_000;
+const FILE_CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 type GitHubIssue = {
   number: number;
@@ -49,6 +50,83 @@ type RepoTreeNode = {
   sha?: string;
   children?: RepoTreeNode[];
 };
+
+type FileContextCacheEntry = {
+  key: string;
+  repo: string;
+  branch: string;
+  selectionKey: string;
+  contexts: string[];
+  files: FileContext[];
+  expiresAt: number;
+};
+
+const fileContextCache = new Map<string, FileContextCacheEntry>();
+
+function createSelectionKey(paths: string[]) {
+  if (!paths.length) {
+    return "";
+  }
+  const normalized = [...paths].map((entry) => entry.trim()).filter(Boolean).sort();
+  return normalized.join("\n");
+}
+
+function createFileContextCacheKey(owner: string, repo: string, branch: string, paths: string[]) {
+  const selectionKey = createSelectionKey(paths);
+  const hash = createHash("sha256").update(selectionKey).digest("hex").slice(0, 12);
+  return {
+    key: `${owner}/${repo}@${branch}:${hash}`,
+    selectionKey,
+  };
+}
+
+function purgeExpiredFileContexts(now = Date.now()) {
+  for (const [key, entry] of fileContextCache.entries()) {
+    if (entry.expiresAt <= now) {
+      fileContextCache.delete(key);
+    }
+  }
+}
+
+function getCachedFileContexts(cacheKey: string, selectionKey: string) {
+  purgeExpiredFileContexts();
+  const entry = fileContextCache.get(cacheKey);
+  if (!entry) {
+    console.info(`[context-cache] miss ${cacheKey} (no entry)`);
+    return null;
+  }
+  if (entry.selectionKey !== selectionKey) {
+    console.info(`[context-cache] miss ${cacheKey} (selection mismatch)`);
+    return null;
+  }
+  entry.expiresAt = Date.now() + FILE_CONTEXT_CACHE_TTL_MS;
+  console.info(`[context-cache] hit ${cacheKey}`);
+  return {
+    contexts: entry.contexts,
+    files: entry.files,
+  };
+}
+
+function setCachedFileContexts(
+  cacheKey: string,
+  selectionKey: string,
+  repo: string,
+  branch: string,
+  payload: { contexts: string[]; files: FileContext[] }
+) {
+  const expiresAt = Date.now() + FILE_CONTEXT_CACHE_TTL_MS;
+  fileContextCache.set(cacheKey, {
+    key: cacheKey,
+    repo,
+    branch,
+    selectionKey,
+    contexts: payload.contexts,
+    files: payload.files,
+    expiresAt,
+  });
+  console.info(`[context-cache] store ${cacheKey} (expires in ${FILE_CONTEXT_CACHE_TTL_MS}ms)`);
+  return payload;
+}
 
 function parseGitHubUrl(repoUrl: string) {
   try {
@@ -1113,6 +1191,7 @@ export async function POST(request: Request) {
     if (!parsed) {
       return NextResponse.json({ error: "Invalid GitHub repository URL" }, { status: 400 });
     }
+    const repoIdentity = `${parsed.owner}/${parsed.repo}`;
 
     let branchRef = preferredBranch as string | undefined;
     let repoInfo: GitHubRepo | undefined;
@@ -1183,9 +1262,25 @@ export async function POST(request: Request) {
       ? fetchRepoTree(parsed.owner, parsed.repo, githubToken, treeDepth, resolvedBranch)
       : Promise.resolve<RepoTreeNode[] | undefined>(undefined);
 
-    const fileContextsPromise = selectedPaths.length
-      ? buildFileContexts(parsed.owner, parsed.repo, selectedPaths, githubToken, resolvedBranch)
-      : Promise.resolve({ contexts: [] as string[], files: [] as FileContext[] });
+    let fileContextsPromise: Promise<{ contexts: string[]; files: FileContext[] }>;
+    if (selectedPaths.length) {
+      const { key: cacheKey, selectionKey } = createFileContextCacheKey(
+        parsed.owner,
+        parsed.repo,
+        resolvedBranch,
+        selectedPaths
+      );
+      const cached = getCachedFileContexts(cacheKey, selectionKey);
+      if (cached) {
+        fileContextsPromise = Promise.resolve(cached);
+      } else {
+        fileContextsPromise = buildFileContexts(parsed.owner, parsed.repo, selectedPaths, githubToken, resolvedBranch).then(
+          (result) => setCachedFileContexts(cacheKey, selectionKey, repoIdentity, resolvedBranch, result)
+        );
+      }
+    } else {
+      fileContextsPromise = Promise.resolve({ contexts: [] as string[], files: [] as FileContext[] });
+    }
 
     const summaries = await buildIssuesPayload(issues, githubToken);
     updateProgress?.("preparing_prompt", {
