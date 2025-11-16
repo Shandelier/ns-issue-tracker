@@ -202,6 +202,7 @@ export default function HomePage() {
   const [authLoading, setAuthLoading] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
+  const [openRouterKey, setOpenRouterKey] = useState("");
   const [issueLimit, setIssueLimit] = useState(DEFAULT_ISSUE_LIMIT);
   const [includeAllIssues, setIncludeAllIssues] = useState(true);
   const [repoTree, setRepoTree] = useState<RepoTreeNode[]>([]);
@@ -408,7 +409,9 @@ export default function HomePage() {
 
   useEffect(() => {
     const stored = loadSettingsFromStorage();
-    setHasOpenRouterKey(Boolean(stored?.openRouterKey?.trim()));
+    const storedOpenRouterKey = stored?.openRouterKey ?? "";
+    setOpenRouterKey(storedOpenRouterKey);
+    setHasOpenRouterKey(Boolean(storedOpenRouterKey.trim()));
     if (!stored) {
       return;
     }
@@ -426,7 +429,9 @@ export default function HomePage() {
     }
     const handleStorage = () => {
       const stored = loadSettingsFromStorage();
-      setHasOpenRouterKey(Boolean(stored?.openRouterKey?.trim()));
+      const storedOpenRouterKey = stored?.openRouterKey ?? "";
+      setOpenRouterKey(storedOpenRouterKey);
+      setHasOpenRouterKey(Boolean(storedOpenRouterKey.trim()));
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
@@ -775,6 +780,7 @@ export default function HomePage() {
     async (options?: { bypassCache?: boolean }) => {
       const bypassCache = options?.bypassCache ?? false;
       let requestProgressId: string | null = null;
+      const sanitizedOpenRouterKey = openRouterKey.trim();
 
       if (!trimmedRepo) {
         setError("Please enter a repository URL");
@@ -794,6 +800,12 @@ export default function HomePage() {
         setProgressSnapshot(null);
         setPendingCsvDownload(0);
         setIssueProgressCounter(null);
+        return;
+      }
+
+      if (!sanitizedOpenRouterKey) {
+        setError("Add an OpenRouter API key in Settings before estimating issues.");
+        setNotice(null);
         return;
       }
 
@@ -824,6 +836,9 @@ export default function HomePage() {
         }
         if (requestProgressId) {
           baseRequestBody.progressId = requestProgressId;
+        }
+        if (sanitizedOpenRouterKey) {
+          baseRequestBody.openRouterKey = sanitizedOpenRouterKey;
         }
 
         const aggregatedEstimateMap = new Map<number, IssueEstimate>();
@@ -983,6 +998,7 @@ export default function HomePage() {
       githubToken,
       isRepoLoaded,
       normalizedLimit,
+      openRouterKey,
       openRouterModel,
       selectionTrimmed,
       trimmedRepo,

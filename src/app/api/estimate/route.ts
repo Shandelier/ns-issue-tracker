@@ -835,6 +835,7 @@ type RequestEstimatesOptions = {
   debugCapture?: boolean;
   model?: string;
   progress?: (stage: ProgressStage, overrides?: ProgressOverrides) => void;
+  apiKey?: string;
 };
 
 type ChunkProgressMeta = {
@@ -895,6 +896,7 @@ ${JSON.stringify(issueSummaries)}`;
   try {
     ({ content } = await openRouterChat({
       model,
+      apiKey: options?.apiKey,
       temperature: 0.2,
       messages: [
         { role: "system", content: systemPrompt },
@@ -1166,6 +1168,9 @@ export async function POST(request: Request) {
       : [];
     const rawModel = typeof body?.model === "string" ? body.model.trim() : "";
     const requestedModel = rawModel.length > 0 ? rawModel : undefined;
+    const rawOpenRouterKey =
+      typeof body?.openRouterKey === "string" ? body.openRouterKey.trim() : "";
+    const openRouterKey = rawOpenRouterKey.length > 0 ? rawOpenRouterKey : undefined;
     const preferredBranch =
       typeof body?.branch === "string" && body.branch.trim().length > 0
         ? body.branch.trim()
@@ -1297,6 +1302,7 @@ export async function POST(request: Request) {
       debugCapture: debugCaptureOverride,
       model: requestedModel,
       progress: updateProgress,
+      apiKey: openRouterKey,
     });
 
     const estimateByNumber = new Map(
