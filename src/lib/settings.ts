@@ -1,6 +1,9 @@
 export const SETTINGS_STORAGE_KEY = "issue-estimator-settings-v1";
 
 export const OPENROUTER_MODEL_OPTIONS = [
+  { value: "tngtech/deepseek-r1t2-chimera:free", label: "DeepSeek R1T2 Chimera (free)" },
+  { value: "openrouter/sherlock-think-alpha", label: "OpenRouter Sherlock Think Alpha" },
+  { value: "qwen/qwen3-coder:free", label: "Qwen 3 Coder (free)" },
   { value: "openai/gpt-5", label: "OpenAI GPT-5" },
   { value: "x-ai/grok-code-fast-1", label: "xAI Grok Code Fast 1" },
   { value: "anthropic/claude-sonnet-4.5", label: "Anthropic Claude Sonnet 4.5" },

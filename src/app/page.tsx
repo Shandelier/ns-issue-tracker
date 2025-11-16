@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -219,6 +220,7 @@ export default function HomePage() {
   const [debugCapturePath, setDebugCapturePath] = useState<string | null>(null);
   const [debugCopyState, setDebugCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [openRouterModel, setOpenRouterModel] = useState<string | null>(null);
+  const [hasOpenRouterKey, setHasOpenRouterKey] = useState(false);
   const debugCopyTimeoutRef = useRef<number | null>(null);
   const progressStartRef = useRef<number | null>(null);
   const [progressElapsedMs, setProgressElapsedMs] = useState(0);
@@ -406,6 +408,7 @@ export default function HomePage() {
 
   useEffect(() => {
     const stored = loadSettingsFromStorage();
+    setHasOpenRouterKey(Boolean(stored?.openRouterKey?.trim()));
     if (!stored) {
       return;
     }
@@ -415,6 +418,18 @@ export default function HomePage() {
     if (stored.model) {
       setOpenRouterModel(stored.model);
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const handleStorage = () => {
+      const stored = loadSettingsFromStorage();
+      setHasOpenRouterKey(Boolean(stored?.openRouterKey?.trim()));
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   useEffect(() => {
@@ -1125,6 +1140,19 @@ export default function HomePage() {
           <p className="text-xs text-slate-500">
             Need higher GitHub rate limits? Add your token in the Settings page first.
           </p>
+
+          {!hasOpenRouterKey ? (
+            <p className="text-xs text-amber-600">
+              Add an OpenRouter API key in{" "}
+              <Link
+                href="/settings"
+                className="text-sky-600 underline-offset-2 hover:underline"
+              >
+                Settings
+              </Link>{" "}
+              before estimating to avoid authentication errors.
+            </p>
+          ) : null}
 
           <Button type="submit" disabled={isLoadingRepo} className="w-full sm:w-auto">
             {isLoadingRepo ? "Loading repository…" : "Load repository"}
