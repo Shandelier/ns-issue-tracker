@@ -6,6 +6,9 @@ export const OPENROUTER_MODEL_OPTIONS = [
   { value: "anthropic/claude-sonnet-4.5", label: "Anthropic Claude Sonnet 4.5" },
 ] as const;
 
+export const OPENROUTER_KEY_DOC_URL = "https://openrouter.ai/settings/keys";
+export const GITHUB_TOKEN_DOC_URL = "https://github.com/settings/tokens";
+
 export type OpenRouterModel = (typeof OPENROUTER_MODEL_OPTIONS)[number]["value"];
 
 export type IssueEstimatorSettings = {

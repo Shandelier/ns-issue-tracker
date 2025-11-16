@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import {
   DEFAULT_SETTINGS,
+  GITHUB_TOKEN_DOC_URL,
+  OPENROUTER_KEY_DOC_URL,
   OPENROUTER_MODEL_OPTIONS,
   type IssueEstimatorSettings,
   loadSettingsFromStorage,
@@ -96,6 +98,16 @@ export default function SettingsPage() {
             <p className="text-xs text-slate-500">
               Stored in your browser only. Needed to call OpenRouter models during estimation.
             </p>
+            <p className="text-xs text-slate-500">
+              <a
+                href={OPENROUTER_KEY_DOC_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sky-600 underline-offset-2 hover:underline"
+              >
+                How to find or generate an OpenRouter API key
+              </a>
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -112,6 +124,16 @@ export default function SettingsPage() {
             />
             <p className="text-xs text-slate-500">
               Optional but recommended to avoid low anonymous API rate limits.
+            </p>
+            <p className="text-xs text-slate-500">
+              <a
+                href={GITHUB_TOKEN_DOC_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sky-600 underline-offset-2 hover:underline"
+              >
+                How to create a GitHub personal access token
+              </a>
             </p>
           </div>
 
