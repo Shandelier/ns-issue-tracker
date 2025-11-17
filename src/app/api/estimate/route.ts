@@ -11,8 +11,12 @@ export const runtime = "nodejs";
 
 const DEFAULT_ISSUE_BATCH_SIZE = 5;
 const OPENROUTER_CHUNK_SIZES = [5, 3, 1] as const;
-const OPENROUTER_CHUNK_TIMEOUT_MS = 35_000;
+const OPENROUTER_CHUNK_TIMEOUT_MS = 25_000;
+const OPENROUTER_SLOW_CHUNK_THRESHOLD_MS = 20_000;
 const FILE_CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
+const REQUEST_SOFT_TIMEOUT_MS = 23_000;
+const REQUEST_HARD_TIMEOUT_MS = 27_000;
+const REQUEST_LOW_BUDGET_CHUNK_THRESHOLD_MS = 6_000;
 
 type GitHubIssue = {
   number: number;
@@ -836,6 +840,9 @@ type RequestEstimatesOptions = {
   model?: string;
   progress?: (stage: ProgressStage, overrides?: ProgressOverrides) => void;
   apiKey?: string;
+  requestStartedAt?: number;
+  softDeadlineTs?: number;
+  hardDeadlineTs?: number;
 };
 
 type ChunkProgressMeta = {
@@ -954,7 +961,7 @@ async function requestEstimates(
 
   const systemPrompt = `You are a budgeting assistant. Estimate the complexity and US Dollar cost of solving the GitHub issues.
 Return JSON with an array "estimates" where each entry contains issue_number, complexity (one of Low, Medium, High),
-and estimated_cost (a string like "$250" in range of $100-$10000). Use the details about the issue and repo files selected by the user for precise estimation. Take into account complexity of the project and the issue. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
+and estimated_cost (a string like "$250" in range of $100-$10000). Users sometimes put questions or spam in issues, so for them return $0. Use the details about the issue and repo files selected by the user for precise estimation. Take into account complexity of the project and the issue. In estimation assume the task will be solved by a single experienced developer. keep explanations brief.`;
 
   const filesSection = fileContexts.length
     ? `\n\nHere is additional repository context:\n${fileContexts.join("\n\n")}`
@@ -977,6 +984,43 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
   let processedCount = 0;
   let chunkIndex = 0;
   let preferredSizeIndex = 0;
+  const requestStartedAt = options?.requestStartedAt;
+  const softDeadlineTs = options?.softDeadlineTs;
+  const hardDeadlineTs = options?.hardDeadlineTs;
+  const totalBudgetMs =
+    typeof requestStartedAt === "number" && typeof hardDeadlineTs === "number"
+      ? hardDeadlineTs - requestStartedAt
+      : undefined;
+  let deadlineWarningLogged = false;
+
+  const ensureRequestBudget = (stage: string) => {
+    if (typeof hardDeadlineTs !== "number") {
+      return;
+    }
+    const now = Date.now();
+    const elapsed = typeof requestStartedAt === "number" ? now - requestStartedAt : undefined;
+    const remaining = hardDeadlineTs - now;
+
+    if (!deadlineWarningLogged && typeof softDeadlineTs === "number" && now >= softDeadlineTs) {
+      console.warn(
+        `[estimate] Approaching timeout while ${stage}. Elapsed ${elapsed ?? "?"}ms${
+          typeof totalBudgetMs === "number" ? ` of ${totalBudgetMs}ms` : ""
+        }.`
+      );
+      deadlineWarningLogged = true;
+    }
+
+    if (remaining <= 0) {
+      console.warn(
+        `[estimate] Aborting estimation while ${stage} after ${elapsed ?? "?"}ms to avoid exceeding timeout${
+          typeof totalBudgetMs === "number" ? ` (${totalBudgetMs}ms budget)` : ""
+        }.`
+      );
+      throw new Error(
+        "Estimation aborted early to avoid hitting the server timeout. Try again with fewer issues or selected files."
+      );
+    }
+  };
 
   while (processedCount < totalCount) {
     let attemptIndex = preferredSizeIndex;
@@ -984,7 +1028,30 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
     let handled = false;
 
     while (attemptIndex < OPENROUTER_CHUNK_SIZES.length) {
-      const attemptSize = OPENROUTER_CHUNK_SIZES[attemptIndex];
+      ensureRequestBudget(`preparing chunk ${chunkIndex + 1}`);
+
+      let chunkSizeIndexUsed = attemptIndex;
+      let attemptSize = OPENROUTER_CHUNK_SIZES[chunkSizeIndexUsed];
+      if (typeof hardDeadlineTs === "number") {
+        const remainingBudgetMs = hardDeadlineTs - Date.now();
+        if (
+          remainingBudgetMs > 0 &&
+          remainingBudgetMs <= REQUEST_LOW_BUDGET_CHUNK_THRESHOLD_MS &&
+          chunkSizeIndexUsed < OPENROUTER_CHUNK_SIZES.length - 1
+        ) {
+          chunkSizeIndexUsed = Math.min(
+            chunkSizeIndexUsed + 1,
+            OPENROUTER_CHUNK_SIZES.length - 1
+          );
+          attemptSize = OPENROUTER_CHUNK_SIZES[chunkSizeIndexUsed];
+          console.warn(
+            `[estimate] Remaining budget ${remainingBudgetMs}ms; reducing chunk size to ${attemptSize} for chunk ${
+              chunkIndex + 1
+            }.`
+          );
+        }
+      }
+
       const chunk = issueSummaries.slice(
         processedCount,
         Math.min(processedCount + attemptSize, totalCount)
@@ -997,6 +1064,8 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
       }
 
       try {
+        ensureRequestBudget(`calling OpenRouter for chunk ${chunkIndex + 1}`);
+        const chunkCallStartedAt = Date.now();
         const { estimates, debugPath } = await requestEstimatesForChunk(
           chunk,
           fileContexts,
@@ -1010,6 +1079,7 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
             totalCount,
           }
         );
+        const elapsedMs = Date.now() - chunkCallStartedAt;
 
         const chunkEstimates = new Map<
           number,
@@ -1052,7 +1122,10 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
 
         const updatedProcessedCount = processedCount + chunk.length;
         options?.progress?.("calling_openrouter", {
-          message: `Received estimates for ${Math.min(updatedProcessedCount, totalCount)} of ${totalCount} issue${
+          message: `Received estimates for ${Math.min(
+            updatedProcessedCount,
+            totalCount
+          )} of ${totalCount} issue${
             totalCount === 1 ? "" : "s"
           }.`,
           processedCount: updatedProcessedCount,
@@ -1063,8 +1136,24 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
         });
 
         processedCount = updatedProcessedCount;
+        const completedChunkNumber = chunkIndex + 1;
         chunkIndex += 1;
-        preferredSizeIndex = attemptIndex;
+
+        const slowChunk = elapsedMs >= OPENROUTER_SLOW_CHUNK_THRESHOLD_MS;
+        if (slowChunk && chunkSizeIndexUsed < OPENROUTER_CHUNK_SIZES.length - 1) {
+          const nextIndex = Math.min(
+            chunkSizeIndexUsed + 1,
+            OPENROUTER_CHUNK_SIZES.length - 1
+          );
+          if (nextIndex !== preferredSizeIndex) {
+            console.info(
+              `[estimate] Chunk ${completedChunkNumber} took ${elapsedMs}ms; reducing future chunk size to ${OPENROUTER_CHUNK_SIZES[nextIndex]}.`
+            );
+          }
+          preferredSizeIndex = nextIndex;
+        } else {
+          preferredSizeIndex = chunkSizeIndexUsed;
+        }
         handled = true;
         break;
       } catch (error) {
@@ -1127,6 +1216,9 @@ and estimated_cost (a string like "$250" in range of $100-$10000). Use the detai
 
 export async function POST(request: Request) {
   let updateProgress: ((stage: ProgressStage, overrides?: ProgressOverrides) => void) | undefined;
+  const requestReceivedAt = Date.now();
+  const softDeadlineTs = requestReceivedAt + REQUEST_SOFT_TIMEOUT_MS;
+  const hardDeadlineTs = requestReceivedAt + REQUEST_HARD_TIMEOUT_MS;
 
   try {
     let expectedHash: string;
@@ -1303,6 +1395,9 @@ export async function POST(request: Request) {
       model: requestedModel,
       progress: updateProgress,
       apiKey: openRouterKey,
+      requestStartedAt: requestReceivedAt,
+      softDeadlineTs,
+      hardDeadlineTs,
     });
 
     const estimateByNumber = new Map(
